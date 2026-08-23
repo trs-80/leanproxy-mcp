@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,10 @@ const (
 	SemanticSimilarityThreshold = 0.92
 	semanticSearchCandidates    = 5
 	vectorDeleteTimeout         = 10 * time.Second
+	// DefaultMaxEntries bounds the in-memory cache: entries hold full prompts
+	// and responses, so TTL alone let a busy proxy accumulate 24h of payloads.
+	// When the cap is exceeded the least recently accessed entries are evicted.
+	DefaultMaxEntries = 10000
 )
 
 type HitType int
@@ -44,12 +49,23 @@ func (h HitType) String() string {
 }
 
 type SemanticCacheEntry struct {
-	Key        string
-	Prompt     string
-	ToolName   string
-	Response   json.RawMessage
-	CreatedAt  time.Time
-	AccessedAt time.Time
+	Key       string
+	Prompt    string
+	ToolName  string
+	Response  json.RawMessage
+	CreatedAt time.Time
+	// accessed is the last-access time in unix nanoseconds, updated
+	// atomically so exact-match hits only need the read lock.
+	accessed int64
+}
+
+// AccessedAt returns the entry's last access time.
+func (e *SemanticCacheEntry) AccessedAt() time.Time {
+	return time.Unix(0, atomic.LoadInt64(&e.accessed))
+}
+
+func (e *SemanticCacheEntry) touch() {
+	atomic.StoreInt64(&e.accessed, time.Now().UnixNano())
 }
 
 type SemanticCacheResult struct {
@@ -107,12 +123,21 @@ func (s SemanticCacheStats) FormatJSON() string {
 // store errors are logged and surfaced as return values where useful, but a
 // degraded (or absent) vector store simply means exact-match-only behavior.
 type SemanticCache struct {
-	mu       sync.RWMutex
-	entries  map[string]*SemanticCacheEntry
-	stats    SemanticCacheStats
-	ttl      time.Duration
-	vectorDB vectordb.Store
-	logger   *slog.Logger
+	mu         sync.RWMutex
+	entries    map[string]*SemanticCacheEntry
+	maxEntries int
+	ttl        time.Duration
+	vectorDB   vectordb.Store
+	logger     *slog.Logger
+
+	// Counters are atomic so the exact-match read path never needs the write
+	// lock; avgSimilarity is only written under mu (semantic-hit path).
+	totalRequests atomic.Int64
+	exactHits     atomic.Int64
+	semanticHits  atomic.Int64
+	misses        atomic.Int64
+	evicted       atomic.Int64
+	avgSimilarity float64
 
 	evictInterval   time.Duration
 	persistPath     string
@@ -166,6 +191,14 @@ func WithStatsPersistInterval(d time.Duration) SemanticCacheOption {
 	}
 }
 
+// WithMaxEntries caps the number of in-memory entries; n <= 0 disables the
+// cap (TTL eviction only).
+func WithMaxEntries(n int) SemanticCacheOption {
+	return func(sc *SemanticCache) {
+		sc.maxEntries = n
+	}
+}
+
 func NewSemanticCache(vectorDB vectordb.Store, logger *slog.Logger, ttl time.Duration, opts ...SemanticCacheOption) *SemanticCache {
 	if logger == nil {
 		logger = slog.Default()
@@ -175,6 +208,7 @@ func NewSemanticCache(vectorDB vectordb.Store, logger *slog.Logger, ttl time.Dur
 	}
 	sc := &SemanticCache{
 		entries:         make(map[string]*SemanticCacheEntry),
+		maxEntries:      DefaultMaxEntries,
 		ttl:             ttl,
 		vectorDB:        vectorDB,
 		logger:          logger,
@@ -246,27 +280,36 @@ func (sc *SemanticCache) Get(ctx context.Context, prompt, toolName string, embed
 	key := cacheKey(toolName, prompt)
 	miss := &SemanticCacheResult{HitType: HitMiss}
 
-	sc.mu.Lock()
-	sc.stats.TotalRequests++
-	if entry, ok := sc.entries[key]; ok {
-		if sc.entryUsable(entry, toolName) {
-			entry.AccessedAt = time.Now()
-			sc.stats.ExactHits++
-			resp := entry.Response
-			sc.mu.Unlock()
-			sc.logger.Info("cache=semantic similarity=1.000",
-				"hit_type", "exact",
-				"tool", toolName,
-				"prompt_hash", key[:12])
-			return &SemanticCacheResult{Response: resp, HitType: HitExact, Similarity: 1.0}, nil
+	sc.totalRequests.Add(1)
+
+	sc.mu.RLock()
+	entry, ok := sc.entries[key]
+	usable := ok && sc.entryUsable(entry, toolName)
+	if usable {
+		entry.touch()
+		resp := entry.Response
+		sc.mu.RUnlock()
+		sc.exactHits.Add(1)
+		sc.logger.Info("cache=semantic similarity=1.000",
+			"hit_type", "exact",
+			"tool", toolName,
+			"prompt_hash", key[:12])
+		return &SemanticCacheResult{Response: resp, HitType: HitExact, Similarity: 1.0}, nil
+	}
+	sc.mu.RUnlock()
+
+	if ok {
+		// Present but expired: remove it (re-checking under the write lock —
+		// a concurrent Set may have replaced it with a fresh entry).
+		sc.mu.Lock()
+		if current, still := sc.entries[key]; still && current == entry {
+			sc.removeEntryLocked(key)
 		}
-		sc.removeEntryLocked(key)
-		sc.stats.Misses++
 		sc.mu.Unlock()
+		sc.misses.Add(1)
 		sc.asyncDeleteVector(key)
 		return miss, nil
 	}
-	sc.mu.Unlock()
 
 	if sc.vectorDB == nil || len(embedding) == 0 {
 		sc.recordMiss()
@@ -284,7 +327,14 @@ func (sc *SemanticCache) Get(ctx context.Context, prompt, toolName string, embed
 		if cand.Score < SemanticSimilarityThreshold {
 			continue
 		}
-		if result, ok := sc.trySemanticHit(cand, toolName); ok {
+		result, staleID, ok := sc.trySemanticHit(cand, toolName)
+		if staleID != "" {
+			// Deleted after the lock is released: asyncDeleteVector takes
+			// sc.mu itself, so spawning it under the lock would just park
+			// goroutines on the mutex.
+			sc.asyncDeleteVector(staleID)
+		}
+		if ok {
 			return result, nil
 		}
 	}
@@ -294,34 +344,33 @@ func (sc *SemanticCache) Get(ctx context.Context, prompt, toolName string, embed
 }
 
 // trySemanticHit validates a vector candidate against the in-memory entry
-// (presence, tool scope, TTL) under a single lock hold. Returns the result
-// and true only when the candidate is fully valid.
-func (sc *SemanticCache) trySemanticHit(cand vectordb.SearchResult, toolName string) (*SemanticCacheResult, bool) {
+// (presence, tool scope, TTL) under a single lock hold. It returns the result
+// and true only when the candidate is fully valid; staleID names a vector
+// record the caller should delete (after releasing no locks of its own).
+func (sc *SemanticCache) trySemanticHit(cand vectordb.SearchResult, toolName string) (result *SemanticCacheResult, staleID string, ok bool) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	entry, ok := sc.entries[cand.Record.ID]
-	if !ok {
+	entry, exists := sc.entries[cand.Record.ID]
+	if !exists {
 		// Stale vector: present in the store, absent in memory.
-		sc.stats.Misses++
-		go sc.asyncDeleteVector(cand.Record.ID)
-		return nil, false
+		sc.misses.Add(1)
+		return nil, cand.Record.ID, false
 	}
 	if entry.ToolName != toolName {
 		// Similar prompt belonging to a different tool — never serve.
-		return nil, false
+		return nil, "", false
 	}
 	if !sc.entryUsable(entry, toolName) {
 		sc.removeEntryLocked(cand.Record.ID)
-		sc.stats.Misses++
-		go sc.asyncDeleteVector(cand.Record.ID)
-		return nil, false
+		sc.misses.Add(1)
+		return nil, cand.Record.ID, false
 	}
 
-	sc.stats.SemanticHits++
-	n := float64(sc.stats.SemanticHits)
-	sc.stats.AvgSimilarity = (sc.stats.AvgSimilarity*(n-1) + cand.Score) / n
-	entry.AccessedAt = time.Now()
+	hits := sc.semanticHits.Add(1)
+	n := float64(hits)
+	sc.avgSimilarity = (sc.avgSimilarity*(n-1) + cand.Score) / n
+	entry.touch()
 	resp := entry.Response
 
 	sc.logger.Info(fmt.Sprintf("cache=semantic similarity=%.3f", cand.Score),
@@ -330,7 +379,7 @@ func (sc *SemanticCache) trySemanticHit(cand vectordb.SearchResult, toolName str
 		"similarity", cand.Score,
 		"prompt_hash", cand.Record.ID[:12])
 
-	return &SemanticCacheResult{Response: resp, HitType: HitSemantic, Similarity: cand.Score}, true
+	return &SemanticCacheResult{Response: resp, HitType: HitSemantic, Similarity: cand.Score}, "", true
 }
 
 func (sc *SemanticCache) entryUsable(entry *SemanticCacheEntry, toolName string) bool {
@@ -341,13 +390,11 @@ func (sc *SemanticCache) entryUsable(entry *SemanticCacheEntry, toolName string)
 // Caller must hold sc.mu.
 func (sc *SemanticCache) removeEntryLocked(key string) {
 	delete(sc.entries, key)
-	sc.stats.EvictedEntries++
+	sc.evicted.Add(1)
 }
 
 func (sc *SemanticCache) recordMiss() {
-	sc.mu.Lock()
-	sc.stats.Misses++
-	sc.mu.Unlock()
+	sc.misses.Add(1)
 }
 
 // Set stores a response under the tool-scoped key. An empty response is
@@ -361,12 +408,12 @@ func (sc *SemanticCache) Set(ctx context.Context, prompt string, response json.R
 	key := cacheKey(toolName, prompt)
 	now := time.Now()
 	entry := &SemanticCacheEntry{
-		Key:        key,
-		Prompt:     prompt,
-		ToolName:   toolName,
-		Response:   response,
-		CreatedAt:  now,
-		AccessedAt: now,
+		Key:       key,
+		Prompt:    prompt,
+		ToolName:  toolName,
+		Response:  response,
+		CreatedAt: now,
+		accessed:  now.UnixNano(),
 	}
 
 	var upsertErr error
@@ -386,9 +433,46 @@ func (sc *SemanticCache) Set(ctx context.Context, prompt string, response json.R
 
 	sc.mu.Lock()
 	sc.entries[key] = entry
+	var victims []string
+	if sc.maxEntries > 0 && len(sc.entries) > sc.maxEntries {
+		victims = sc.evictLRULocked(len(sc.entries) - sc.maxEntries + sc.maxEntries/10)
+	}
 	sc.mu.Unlock()
 
+	if len(victims) > 0 {
+		sc.logger.Debug("semantic cache size eviction", "evicted", len(victims), "max_entries", sc.maxEntries)
+		sc.asyncDeleteVector(victims...)
+	}
+
 	return upsertErr
+}
+
+// evictLRULocked removes the n least recently accessed entries and returns
+// their keys. Evicting slightly past the cap (the caller adds ~10% headroom)
+// amortizes the O(n log n) scan across many inserts. Caller must hold sc.mu.
+func (sc *SemanticCache) evictLRULocked(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	type kv struct {
+		key      string
+		accessed int64
+	}
+	all := make([]kv, 0, len(sc.entries))
+	for key, entry := range sc.entries {
+		all = append(all, kv{key, atomic.LoadInt64(&entry.accessed)})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].accessed < all[j].accessed })
+	if n > len(all) {
+		n = len(all)
+	}
+	victims := make([]string, 0, n)
+	for _, item := range all[:n] {
+		delete(sc.entries, item.key)
+		victims = append(victims, item.key)
+	}
+	sc.evicted.Add(int64(n))
+	return victims
 }
 
 func (sc *SemanticCache) PurgeTool(toolName string) int {
@@ -430,8 +514,16 @@ func (sc *SemanticCache) PurgeAll() int {
 
 func (sc *SemanticCache) Stats() SemanticCacheStats {
 	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-	return sc.stats
+	avg := sc.avgSimilarity
+	sc.mu.RUnlock()
+	return SemanticCacheStats{
+		TotalRequests:  sc.totalRequests.Load(),
+		ExactHits:      sc.exactHits.Load(),
+		SemanticHits:   sc.semanticHits.Load(),
+		Misses:         sc.misses.Load(),
+		AvgSimilarity:  avg,
+		EvictedEntries: sc.evicted.Load(),
+	}
 }
 
 func (sc *SemanticCache) Len() int {
@@ -451,7 +543,7 @@ func (sc *SemanticCache) evictExpired() {
 		}
 	}
 	if len(victims) > 0 {
-		sc.stats.EvictedEntries += int64(len(victims))
+		sc.evicted.Add(int64(len(victims)))
 	}
 	sc.mu.Unlock()
 

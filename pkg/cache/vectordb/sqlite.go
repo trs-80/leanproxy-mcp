@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,8 +111,10 @@ func (s *sqliteStore) createTables() error {
 		return fmt.Errorf("vectors table: %w", err)
 	}
 
-	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_vectors_id ON vectors(id)`); err != nil {
-		return fmt.Errorf("vectors index: %w", err)
+	// id is the PRIMARY KEY, which already carries SQLite's automatic unique
+	// index; the old explicit index only added write amplification.
+	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_vectors_id`); err != nil {
+		return fmt.Errorf("vectors index cleanup: %w", err)
 	}
 
 	if s.vec0 {
@@ -195,7 +198,12 @@ func (s *sqliteStore) Search(ctx context.Context, vector []float32, k int) ([]Se
 
 func (s *sqliteStore) searchVec0(ctx context.Context, vector []float32, k int) ([]SearchResult, error) {
 	floatStr := float32SliceToString(vector)
-	query := `SELECT id, distance FROM vec_vectors WHERE vector MATCH ? ORDER BY distance LIMIT ?`
+	// One round trip: the inner query keeps the exact vec0 KNN shape, the
+	// join fetches the k winning records instead of a per-row lookup.
+	query := `SELECT m.id, m.distance, v.vector, v.metadata
+		FROM (SELECT id, distance FROM vec_vectors WHERE vector MATCH ? ORDER BY distance LIMIT ?) m
+		JOIN vectors v ON v.id = m.id
+		ORDER BY m.distance`
 
 	rows, err := s.db.QueryContext(ctx, query, floatStr, k)
 	if err != nil {
@@ -207,19 +215,19 @@ func (s *sqliteStore) searchVec0(ctx context.Context, vector []float32, k int) (
 	for rows.Next() {
 		var id string
 		var distance float64
-		if err := rows.Scan(&id, &distance); err != nil {
+		var vecBytes []byte
+		var metaStr sql.NullString
+		if err := rows.Scan(&id, &distance, &vecBytes, &metaStr); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 
-		rec, err := s.getRecord(ctx, id)
-		if err != nil {
-			s.logger.Warn("vectordb sqlite: vec0 result not in vectors table", "id", id, "error", err)
-			continue
-		}
-
 		results = append(results, SearchResult{
-			Record: rec,
-			Score:  1.0 - distance,
+			Record: VectorRecord{
+				ID:       id,
+				Vector:   bytesToFloat32Slice(vecBytes),
+				Metadata: unmarshalMetadata([]byte(metaStr.String)),
+			},
+			Score: 1.0 - distance,
 		})
 	}
 
@@ -233,7 +241,15 @@ func (s *sqliteStore) searchManual(ctx context.Context, vector []float32, k int)
 	}
 	defer rows.Close()
 
-	var candidates []SearchResult //nolint:prealloc
+	// Keep only the k best rows while scanning: for the default k of 5 a
+	// sorted insert beats sorting (and JSON-decoding metadata for) every row.
+	type manualCand struct {
+		id      string
+		vec     []float32
+		metaStr string
+		score   float64
+	}
+	best := make([]manualCand, 0, k)
 	for rows.Next() {
 		var id string
 		var vecBytes []byte
@@ -243,31 +259,42 @@ func (s *sqliteStore) searchManual(ctx context.Context, vector []float32, k int)
 		}
 
 		storedVec := bytesToFloat32Slice(vecBytes)
-		score := cosineSimilarity(vector, storedVec)
 		if storedVec == nil {
 			continue
 		}
+		score := cosineSimilarity(vector, storedVec)
+		if len(best) == k && score <= best[k-1].score {
+			continue
+		}
 
-		candidates = append(candidates, SearchResult{
-			Record: VectorRecord{
-				ID:       id,
-				Vector:   storedVec,
-				Metadata: unmarshalMetadata([]byte(metaStr.String)),
-			},
-			Score: score,
-		})
+		// Insert in descending-score order, dropping the current worst.
+		pos := len(best)
+		for pos > 0 && best[pos-1].score < score {
+			pos--
+		}
+		if len(best) < k {
+			best = append(best, manualCand{})
+		}
+		copy(best[pos+1:], best[pos:len(best)-1])
+		best[pos] = manualCand{id: id, vec: storedVec, metaStr: metaStr.String, score: score}
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows: %w", err)
 	}
 
-	sortResults(candidates)
-
-	if k > len(candidates) {
-		k = len(candidates)
+	results := make([]SearchResult, 0, len(best))
+	for _, c := range best {
+		results = append(results, SearchResult{
+			Record: VectorRecord{
+				ID:       c.id,
+				Vector:   c.vec,
+				Metadata: unmarshalMetadata([]byte(c.metaStr)),
+			},
+			Score: c.score,
+		})
 	}
-	return candidates[:k], nil
+	return results, nil
 }
 
 func (s *sqliteStore) getRecord(ctx context.Context, id string) (VectorRecord, error) {
@@ -362,16 +389,18 @@ func float32SliceToString(v []float32) string {
 	if len(v) == 0 {
 		return "[]"
 	}
-	var b strings.Builder
-	b.WriteByte('[')
+	// strconv.AppendFloat into one buffer: ~20-50x cheaper than a Sprintf
+	// per element, and this runs once per search and per upserted record.
+	buf := make([]byte, 0, len(v)*12+2)
+	buf = append(buf, '[')
 	for i, f := range v {
 		if i > 0 {
-			b.WriteByte(',')
+			buf = append(buf, ',')
 		}
-		b.WriteString(fmt.Sprintf("%f", f))
+		buf = strconv.AppendFloat(buf, float64(f), 'f', -1, 32)
 	}
-	b.WriteByte(']')
-	return b.String()
+	buf = append(buf, ']')
+	return string(buf)
 }
 
 func cosineSimilarity(a, b []float32) float64 {

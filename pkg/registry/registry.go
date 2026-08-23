@@ -100,8 +100,11 @@ type Registry interface {
 
 type inMemoryRegistry struct {
 	servers map[string]*ServerEntry
-	byCap   map[string][]string
-	byTrans map[TransportType][]string
+	// byCap/byTrans are sets so that insert, delete, and repeated Load are
+	// O(1) and idempotent (the old slices grew duplicates on every re-Load
+	// and were rebuilt wholesale on every Update).
+	byCap   map[string]map[string]struct{}
+	byTrans map[TransportType]map[string]struct{}
 	mu      sync.RWMutex
 	logger  *slog.Logger
 	subMu   sync.RWMutex
@@ -112,8 +115,8 @@ type inMemoryRegistry struct {
 func NewRegistry(logger *slog.Logger, persistPath string) Registry {
 	return &inMemoryRegistry{
 		servers: make(map[string]*ServerEntry),
-		byCap:   make(map[string][]string),
-		byTrans: make(map[TransportType][]string),
+		byCap:   make(map[string]map[string]struct{}),
+		byTrans: make(map[TransportType]map[string]struct{}),
 		logger:  logger,
 		persist: persistPath,
 	}
@@ -138,11 +141,7 @@ func (r *inMemoryRegistry) Register(ctx context.Context, entry ServerEntry) erro
 	}
 
 	r.servers[entry.ID] = &entry
-
-	for _, cap := range entry.Capabilities {
-		r.byCap[cap] = append(r.byCap[cap], entry.ID)
-	}
-	r.byTrans[entry.Transport] = append(r.byTrans[entry.Transport], entry.ID)
+	r.indexLocked(&entry)
 
 	r.emitEvent(RegistryEvent{Type: EventRegistered, Server: &entry, Details: "server registered"})
 
@@ -161,28 +160,7 @@ func (r *inMemoryRegistry) Unregister(ctx context.Context, id string) error {
 	}
 
 	delete(r.servers, id)
-
-	for _, cap := range entry.Capabilities {
-		if ids, ok := r.byCap[cap]; ok {
-			newIDs := make([]string, 0, len(ids))
-			for _, sid := range ids {
-				if sid != id {
-					newIDs = append(newIDs, sid)
-				}
-			}
-			r.byCap[cap] = newIDs
-		}
-	}
-
-	if ids, ok := r.byTrans[entry.Transport]; ok {
-		newIDs := make([]string, 0, len(ids))
-		for _, sid := range ids {
-			if sid != id {
-				newIDs = append(newIDs, sid)
-			}
-		}
-		r.byTrans[entry.Transport] = newIDs
-	}
+	r.unindexLocked(entry)
 
 	r.emitEvent(RegistryEvent{Type: EventUnregistered, Server: entry, Details: "server unregistered"})
 
@@ -204,36 +182,12 @@ func (r *inMemoryRegistry) Update(ctx context.Context, entry ServerEntry) error 
 		return fmt.Errorf("registry: server not found: %s: %w", entry.ID, contextToErr(ctx))
 	}
 
-	for _, cap := range existing.Capabilities {
-		if ids, ok := r.byCap[cap]; ok {
-			newIDs := make([]string, 0, len(ids))
-			for _, sid := range ids {
-				if sid != entry.ID {
-					newIDs = append(newIDs, sid)
-				}
-			}
-			r.byCap[cap] = newIDs
-		}
-	}
-
-	if ids, ok := r.byTrans[existing.Transport]; ok {
-		newIDs := make([]string, 0, len(ids))
-		for _, sid := range ids {
-			if sid != entry.ID {
-				newIDs = append(newIDs, sid)
-			}
-		}
-		r.byTrans[existing.Transport] = newIDs
-	}
+	r.unindexLocked(existing)
 
 	entry.RegisteredAt = existing.RegisteredAt
 	entry.LastSeenAt = time.Now()
 	r.servers[entry.ID] = &entry
-
-	for _, cap := range entry.Capabilities {
-		r.byCap[cap] = append(r.byCap[cap], entry.ID)
-	}
-	r.byTrans[entry.Transport] = append(r.byTrans[entry.Transport], entry.ID)
+	r.indexLocked(&entry)
 
 	r.logger.Debug("server updated", "id", entry.ID)
 
@@ -258,10 +212,11 @@ func (r *inMemoryRegistry) List(ctx context.Context) ([]*ServerEntry, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	now := time.Now()
 	result := make([]*ServerEntry, 0, len(r.servers))
 	for _, entry := range r.servers {
 		e := *entry
-		e.LastSeenAt = time.Now()
+		e.LastSeenAt = now
 		result = append(result, &e)
 	}
 	return result, nil
@@ -272,11 +227,12 @@ func (r *inMemoryRegistry) FindByCapability(ctx context.Context, capability stri
 	defer r.mu.RUnlock()
 
 	ids := r.byCap[capability]
+	now := time.Now()
 	result := make([]*ServerEntry, 0, len(ids))
-	for _, id := range ids {
+	for id := range ids {
 		if entry, ok := r.servers[id]; ok {
 			e := *entry
-			e.LastSeenAt = time.Now()
+			e.LastSeenAt = now
 			result = append(result, &e)
 		}
 	}
@@ -288,15 +244,48 @@ func (r *inMemoryRegistry) FindByTransport(ctx context.Context, transport Transp
 	defer r.mu.RUnlock()
 
 	ids := r.byTrans[transport]
+	now := time.Now()
 	result := make([]*ServerEntry, 0, len(ids))
-	for _, id := range ids {
+	for id := range ids {
 		if entry, ok := r.servers[id]; ok {
 			e := *entry
-			e.LastSeenAt = time.Now()
+			e.LastSeenAt = now
 			result = append(result, &e)
 		}
 	}
 	return result, nil
+}
+
+// indexLocked adds entry to the capability and transport indexes.
+// Caller must hold r.mu.
+func (r *inMemoryRegistry) indexLocked(entry *ServerEntry) {
+	for _, cap := range entry.Capabilities {
+		set, ok := r.byCap[cap]
+		if !ok {
+			set = make(map[string]struct{})
+			r.byCap[cap] = set
+		}
+		set[entry.ID] = struct{}{}
+	}
+	set, ok := r.byTrans[entry.Transport]
+	if !ok {
+		set = make(map[string]struct{})
+		r.byTrans[entry.Transport] = set
+	}
+	set[entry.ID] = struct{}{}
+}
+
+// unindexLocked removes entry from the capability and transport indexes.
+// Caller must hold r.mu.
+func (r *inMemoryRegistry) unindexLocked(entry *ServerEntry) {
+	for _, cap := range entry.Capabilities {
+		if set, ok := r.byCap[cap]; ok {
+			delete(set, entry.ID)
+		}
+	}
+	if set, ok := r.byTrans[entry.Transport]; ok {
+		delete(set, entry.ID)
+	}
 }
 
 func (r *inMemoryRegistry) FindBest(ctx context.Context, criteria MatchCriteria) (*ServerEntry, error) {
@@ -308,7 +297,7 @@ func (r *inMemoryRegistry) FindBest(ctx context.Context, criteria MatchCriteria)
 	if len(criteria.Capabilities) > 0 {
 		capCount := make(map[string]int)
 		for _, cap := range criteria.Capabilities {
-			for _, id := range r.byCap[cap] {
+			for id := range r.byCap[cap] {
 				capCount[id]++
 			}
 		}
@@ -468,11 +457,11 @@ func (r *inMemoryRegistry) Load(ctx context.Context) error {
 	defer r.mu.Unlock()
 
 	for _, entry := range data.Servers {
-		r.servers[entry.ID] = entry
-		for _, cap := range entry.Capabilities {
-			r.byCap[cap] = append(r.byCap[cap], entry.ID)
+		if existing, ok := r.servers[entry.ID]; ok {
+			r.unindexLocked(existing)
 		}
-		r.byTrans[entry.Transport] = append(r.byTrans[entry.Transport], entry.ID)
+		r.servers[entry.ID] = entry
+		r.indexLocked(entry)
 	}
 
 	r.logger.Debug("registry loaded", "count", len(data.Servers), "path", r.persist)
