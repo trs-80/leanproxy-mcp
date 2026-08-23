@@ -326,3 +326,50 @@ func TestToolsListStubs_SchemasAreValidToolSchemas(t *testing.T) {
 		}
 	}
 }
+
+// TestToolsListStubs_CompactSchemasKeepParams: stubs must expose param names,
+// types, and required — without them the model guesses arguments (measured:
+// a no-schema list_projects stub triggered 23 fallback calls in one session).
+func TestToolsListStubs_CompactSchemasKeepParams(t *testing.T) {
+	h := NewHandler(newMockPool(), nil)
+	h.EnableLazyLoading(0)
+	seedToolCache(h, "cbm", Tool{
+		Name:        "list_projects",
+		Description: "List indexed projects with node counts",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number","description":"very long prose that must be dropped"},"filter":{"type":"string"}},"required":["limit"]}`),
+	})
+
+	resp, err := h.handleToolsList(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ToolsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range result.Tools {
+		if tool.Name != "cbm_list_projects" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		var schema struct {
+			Type       string                       `json:"type"`
+			Properties map[string]map[string]string `json:"properties"`
+			Required   []string                     `json:"required"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("stub schema unparseable: %s", raw)
+		}
+		if schema.Type != "object" || schema.Properties["limit"]["type"] != "number" || schema.Properties["filter"]["type"] != "string" {
+			t.Errorf("stub schema lost params: %s", raw)
+		}
+		if len(schema.Required) != 1 || schema.Required[0] != "limit" {
+			t.Errorf("stub schema lost required list: %s", raw)
+		}
+		if strings.Contains(string(raw), "prose") {
+			t.Errorf("stub schema kept prose: %s", raw)
+		}
+		return
+	}
+	t.Fatal("stub not found")
+}

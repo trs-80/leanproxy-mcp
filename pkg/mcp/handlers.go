@@ -238,11 +238,13 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 				gatewayTools = append(gatewayTools, Tool{
 					Name:        stub.Name,
 					Description: stub.Description,
-					// Minimal but VALID schema: the Anthropic API rejects tools
-					// whose input_schema lacks type "object", and clients drop
-					// rejected tools silently — a bare {} made every stub
-					// invisible to the model (verified live 2026-08-23).
-					InputSchema: json.RawMessage(`{"type":"object"}`),
+					// Compact schema: param names/types and the required list,
+					// no prose. A bare {"type":"object"} was measured to send
+					// the model arg-guessing (task2: 23 index_status calls to
+					// reconstruct what one parameterized call returns), and a
+					// schema without type "object" is rejected by the Anthropic
+					// API, silently dropping the tool.
+					InputSchema: compactSchema(tool.InputSchema),
 				})
 			}
 		}
@@ -1514,7 +1516,7 @@ func (h *Handler) suggestTools(serverName, toolName string, max int) string {
 // stubs. Stubs exist for name discovery; the full description travels with
 // get_tool_schema, so every char here is paid in every conversation for
 // marginal value.
-const stubDescChars = 120
+const stubDescChars = 160
 
 // fullCoverageBonus is added when every query word matches, guaranteeing
 // full-coverage matches sort above any partial match (max per-word score is
@@ -1524,3 +1526,40 @@ const fullCoverageBonus = 1000
 // minFullMatchesForPrecision: with at least this many full-coverage matches,
 // partial matches are dropped from search results entirely.
 const minFullMatchesForPrecision = 1
+
+// compactSchema reduces a JSON-schema to parameter names, types, and the
+// required list — the minimum a model needs to call the tool correctly without
+// guessing. Per-param descriptions, enums, defaults, and nested detail are
+// dropped; they account for most of a schema's bytes and are recoverable via
+// get_tool_schema or search_tools. Falls back to a valid empty object schema
+// when the input cannot be parsed.
+func compactSchema(schema json.RawMessage) json.RawMessage {
+	fallback := json.RawMessage(`{"type":"object"}`)
+	var full struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &full); err != nil || len(full.Properties) == 0 {
+		return fallback
+	}
+	props := make(map[string]map[string]string, len(full.Properties))
+	for name, p := range full.Properties {
+		t := p.Type
+		if t == "" {
+			t = "string"
+		}
+		props[name] = map[string]string{"type": t}
+	}
+	out := map[string]interface{}{"type": "object", "properties": props}
+	if len(full.Required) > 0 {
+		sort.Strings(full.Required)
+		out["required"] = full.Required
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return fallback
+	}
+	return b
+}
