@@ -21,9 +21,7 @@ import (
 // ~/.leanproxy/quarantine/.
 
 func TestStory_13_2_DoctorSecurity_ReportsPolicyBands(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("doctor", "--security")
 	t.Logf("doctor --security: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
@@ -41,9 +39,7 @@ func TestStory_13_2_DoctorSecurity_ReportsPolicyBands(t *testing.T) {
 }
 
 func TestStory_13_2_QuarantineDirectory_Exists(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -61,9 +57,7 @@ func TestStory_13_2_QuarantineDirectory_Exists(t *testing.T) {
 // variant is present we additionally verify it's well-formed.
 
 func TestStory_13_2_DoctorSecurity_JSON(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, _, exitCode := runBinary("doctor", "--security", "--json")
 	t.Logf("doctor --security --json: exit=%d stdout=%q", exitCode, stdout)

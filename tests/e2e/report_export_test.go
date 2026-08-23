@@ -20,9 +20,7 @@ import (
 //  * No PII / prompts in the exported data (NFR4)
 
 func TestStory_18_3_ExportCSV_HeaderAndNoPII(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("report", "--export", "csv")
 	t.Logf("report --export csv: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
@@ -52,9 +50,7 @@ func TestStory_18_3_ExportCSV_HeaderAndNoPII(t *testing.T) {
 }
 
 func TestStory_18_3_ExportJSON_ValidArray(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("report", "--export", "json")
 	t.Logf("report --export json: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
@@ -71,9 +67,7 @@ func TestStory_18_3_ExportJSON_ValidArray(t *testing.T) {
 }
 
 func TestStory_18_3_ExportToFile(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	out := filepath.Join(testDir, "costs.csv")
@@ -100,9 +94,7 @@ func TestStory_18_3_ExportToFile(t *testing.T) {
 }
 
 func TestStory_18_3_ExportSinceFilter(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("report", "--export", "json", "--since", "2020-01-01")
 	t.Logf("report --export json --since: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)

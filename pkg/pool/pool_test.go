@@ -394,48 +394,58 @@ func TestServerStats(t *testing.T) {
 	}
 }
 
+// TestConcurrentRequests: PutRequest is the supported enqueue path for stdio
+// servers, and several concurrent requests must all receive responses. Errors
+// are fatal — an earlier version skipped on PutRequest failure, so an API
+// regression would have gone green-by-skip.
 func TestConcurrentRequests(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping in short mode")
+		t.Skip("skipping process-based test in short mode")
 	}
 
 	ctx := context.Background()
-	pool := NewStdioPool(2, 5*time.Minute, nil)
+	pool := NewStdioPool(4, 5*time.Minute, nil)
 	defer pool.Close()
 
 	config := &migrate.ServerConfig{
 		Name:      "test-server",
 		Transport: registry.TransportStdio,
 		Stdio: &migrate.StdioConfig{
-			Command: "cat",
-			Args:    []string{},
+			Command: os.Args[0],
+			Args:    []string{"-test.run=TestHelperProcess"},
+			Env:     []string{"GO_WANT_HELPER_PROCESS=1"},
 		},
 		TimeoutValue: 30 * time.Second,
 	}
 
-	pool.StartServer(ctx, config)
-	time.Sleep(100 * time.Millisecond)
+	if err := pool.StartServer(ctx, config); err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	waitPoolState(t, pool.GetServerState, "test-server", StateIdle)
 
-	resultCh := make(chan *Response, 1)
-	req := Request{
-		Method:   "test",
-		Params:   nil,
-		ID:       1,
-		Timeout:  2 * time.Second,
-		ResultCh: resultCh,
+	const n = 4
+	channels := make([]chan *Response, n)
+	for i := 0; i < n; i++ {
+		channels[i] = make(chan *Response, 1)
+		req := Request{
+			Method:   "ping",
+			ID:       i + 1,
+			Timeout:  5 * time.Second,
+			ResultCh: channels[i],
+		}
+		if err := pool.PutRequest("test-server", req); err != nil {
+			t.Fatalf("PutRequest %d: %v", i, err)
+		}
 	}
 
-	err := pool.PutRequest("test-server", req)
-	if err != nil {
-		t.Skipf("PutRequest not supported for stdio transport: %v", err)
-	}
-
-	select {
-	case <-time.After(5 * time.Second):
-		t.Logf("timeout waiting for response")
-	case resp := <-resultCh:
-		if resp != nil {
-			t.Logf("got response: %+v", resp)
+	for i, ch := range channels {
+		select {
+		case resp := <-ch:
+			if resp == nil || resp.Error != nil {
+				t.Errorf("request %d: unexpected response %+v", i, resp)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("request %d: no response", i)
 		}
 	}
 }

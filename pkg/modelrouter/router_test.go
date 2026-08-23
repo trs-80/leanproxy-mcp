@@ -128,12 +128,8 @@ func TestSelect(t *testing.T) {
 }
 
 func TestNewWithEnvOverride(t *testing.T) {
-	os.Setenv("TEST_LOW_API_KEY", "sk-low-test")
-	os.Setenv("TEST_HIGH_API_KEY", "sk-high-test")
-	defer func() {
-		os.Unsetenv("TEST_LOW_API_KEY")
-		os.Unsetenv("TEST_HIGH_API_KEY")
-	}()
+	t.Setenv("TEST_LOW_API_KEY", "sk-low-test")
+	t.Setenv("TEST_HIGH_API_KEY", "sk-high-test")
 
 	cfg := Config{
 		DefaultTier: TierMedium,

@@ -9,25 +9,17 @@ import (
 	"testing"
 )
 
-func tempRoot(t *testing.T) (*FilesystemClient, string, func()) {
+func tempRoot(t *testing.T) (*FilesystemClient, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "filesystem-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
+	dir := t.TempDir()
 
 	client, err := NewFilesystemClient(slog.Default(), []string{dir})
 	if err != nil {
-		os.RemoveAll(dir)
 		t.Fatalf("failed to create filesystem client: %v", err)
 	}
+	t.Cleanup(func() { client.Close() })
 
-	cleanup := func() {
-		client.Close()
-		os.RemoveAll(dir)
-	}
-
-	return client, dir, cleanup
+	return client, dir
 }
 
 func writeTestFile(t *testing.T, dir, name, content string) {
@@ -67,8 +59,7 @@ func TestNewFilesystemClient_InvalidRoot(t *testing.T) {
 }
 
 func TestNewFilesystemClient_ValidRoot(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	if client == nil {
 		t.Fatal("expected non-nil client")
@@ -117,8 +108,7 @@ func TestResolvePathWithinRoots(t *testing.T) {
 }
 
 func TestGetTools(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	tools := client.GetTools()
 	if len(tools) == 0 {
@@ -153,8 +143,7 @@ func TestGetTools(t *testing.T) {
 }
 
 func TestCallTool_UnknownTool(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), "nonexistent", json.RawMessage(`{}`))
 	if err == nil {
@@ -163,8 +152,7 @@ func TestCallTool_UnknownTool(t *testing.T) {
 }
 
 func TestReadFile(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "hello.txt", "Hello, World!")
 
@@ -189,8 +177,7 @@ func TestReadFile(t *testing.T) {
 }
 
 func TestReadFile_Nested(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "subdir/nested.txt", "nested content")
 
@@ -206,8 +193,7 @@ func TestReadFile_Nested(t *testing.T) {
 }
 
 func TestReadFile_EmptyPath(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolReadFile, json.RawMessage(`{"path":""}`))
 	if err == nil {
@@ -216,8 +202,7 @@ func TestReadFile_EmptyPath(t *testing.T) {
 }
 
 func TestReadFile_Traversal(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolReadFile, json.RawMessage(`{"path":"../etc/passwd"}`))
 	if err == nil {
@@ -226,8 +211,7 @@ func TestReadFile_Traversal(t *testing.T) {
 }
 
 func TestReadFile_AbsolutePath(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolReadFile, json.RawMessage(`{"path":"/etc/passwd"}`))
 	if err == nil {
@@ -236,8 +220,7 @@ func TestReadFile_AbsolutePath(t *testing.T) {
 }
 
 func TestReadFile_Nonexistent(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolReadFile, json.RawMessage(`{"path":"nonexistent.txt"}`))
 	if err == nil {
@@ -246,8 +229,7 @@ func TestReadFile_Nonexistent(t *testing.T) {
 }
 
 func TestReadFile_Directory(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolReadFile, json.RawMessage(`{"path":"."}`))
 	if err == nil {
@@ -256,8 +238,7 @@ func TestReadFile_Directory(t *testing.T) {
 }
 
 func TestReadFile_LargeFile(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	// Create a file larger than 1MB
 	content := make([]byte, 2*1024*1024)
@@ -284,8 +265,7 @@ func TestReadFile_LargeFile(t *testing.T) {
 }
 
 func TestWriteFile(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	result, err := client.CallTool(context.Background(), toolWriteFile, json.RawMessage(`{"path":"newfile.txt","content":"new content"}`))
 	if err != nil {
@@ -312,8 +292,7 @@ func TestWriteFile(t *testing.T) {
 }
 
 func TestWriteFile_Nested(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolWriteFile, json.RawMessage(`{"path":"a/b/c/nested.txt","content":"nested"}`))
 	if err != nil {
@@ -331,8 +310,7 @@ func TestWriteFile_Nested(t *testing.T) {
 }
 
 func TestWriteFile_Traversal(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolWriteFile, json.RawMessage(`{"path":"../outside.txt","content":"escape"}`))
 	if err == nil {
@@ -341,8 +319,7 @@ func TestWriteFile_Traversal(t *testing.T) {
 }
 
 func TestListDir_Root(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "a.txt", "a")
 	writeTestFile(t, dir, "b.txt", "b")
@@ -375,8 +352,7 @@ func TestListDir_Root(t *testing.T) {
 }
 
 func TestListDir_EmptyPath(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolListDir, json.RawMessage(`{}`))
 	if err != nil {
@@ -385,8 +361,7 @@ func TestListDir_EmptyPath(t *testing.T) {
 }
 
 func TestFileInfo(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "info_test.txt", "test")
 
@@ -411,8 +386,7 @@ func TestFileInfo(t *testing.T) {
 }
 
 func TestFileInfo_Directory(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	result, err := client.CallTool(context.Background(), toolFileInfo, json.RawMessage(`{"path":"."}`))
 	if err != nil {
@@ -426,8 +400,7 @@ func TestFileInfo_Directory(t *testing.T) {
 }
 
 func TestSearchFiles(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "main.go", "package main")
 	writeTestFile(t, dir, "util.go", "package util")
@@ -461,8 +434,7 @@ func TestSearchFiles(t *testing.T) {
 }
 
 func TestSearchFiles_EmptyPattern(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolSearchFiles, json.RawMessage(`{"pattern":""}`))
 	if err == nil {
@@ -471,8 +443,7 @@ func TestSearchFiles_EmptyPattern(t *testing.T) {
 }
 
 func TestReadMultiple(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "f1.txt", "file1")
 	writeTestFile(t, dir, "f2.txt", "file2")
@@ -501,8 +472,7 @@ func TestReadMultiple(t *testing.T) {
 }
 
 func TestReadMultiple_WithErrors(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "exists.txt", "exists")
 
@@ -524,8 +494,7 @@ func TestReadMultiple_WithErrors(t *testing.T) {
 }
 
 func TestReadMultiple_EmptyPaths(t *testing.T) {
-	client, _, cleanup := tempRoot(t)
-	defer cleanup()
+	client, _ := tempRoot(t)
 
 	_, err := client.CallTool(context.Background(), toolReadMultiple, json.RawMessage(`{"paths":[]}`))
 	if err == nil {
@@ -534,8 +503,7 @@ func TestReadMultiple_EmptyPaths(t *testing.T) {
 }
 
 func TestCallTool_JSONSerialization(t *testing.T) {
-	client, dir, cleanup := tempRoot(t)
-	defer cleanup()
+	client, dir := tempRoot(t)
 
 	writeTestFile(t, dir, "serialize.txt", "serialization test")
 

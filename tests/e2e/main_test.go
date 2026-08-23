@@ -15,6 +15,39 @@ import (
 	"time"
 )
 
+// TestMain builds the leanproxy-mcp binary for the e2e suite when
+// LEANPROXY_E2E is set and the binary is not already present. Without the
+// env var the suite keeps its historical behavior (skip when the binary is
+// absent) so a plain `go test ./...` stays fast and hermetic; with it, a
+// missing binary is a hard failure, so skips cannot hide in a green run.
+func TestMain(m *testing.M) {
+	if os.Getenv("LEANPROXY_E2E") != "" && !binaryAvailable() {
+		wd, _ := os.Getwd()
+		cmd := exec.Command("go", "build", "-o", filepath.Join(wd, "leanproxy-mcp"), "../..")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e: failed to build leanproxy-mcp binary: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	os.Exit(m.Run())
+}
+
+// requireBinary gates a test on the prebuilt binary. When LEANPROXY_E2E is
+// set the binary is mandatory (fail, never skip); otherwise the test skips
+// with a pointer at how to enable the suite.
+func requireBinary(t *testing.T) {
+	t.Helper()
+	if binaryAvailable() {
+		return
+	}
+	if os.Getenv("LEANPROXY_E2E") != "" {
+		t.Fatal("LEANPROXY_E2E is set but the binary is missing from tests/e2e/ (TestMain build failed?)")
+	}
+	t.Skip("Binary not in tests/e2e/ — set LEANPROXY_E2E=1 to build it and run the e2e suite")
+}
+
 func runBinary(args ...string) (string, string, int) {
 	wd, _ := os.Getwd()
 
@@ -46,9 +79,7 @@ func binaryAvailable() bool {
 }
 
 func TestCLI_HelpCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("--help")
 	output := stdout + stderr
@@ -63,9 +94,7 @@ func TestCLI_HelpCommand(t *testing.T) {
 }
 
 func TestCLI_VersionCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("version")
 	output := stdout + stderr
@@ -80,9 +109,7 @@ func TestCLI_VersionCommand(t *testing.T) {
 }
 
 func TestCLI_InvalidCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	_, stderr, exitCode := runBinary("nonexistent-command")
 
@@ -94,28 +121,22 @@ func TestCLI_InvalidCommand(t *testing.T) {
 }
 
 func TestServer_ListCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "servers.yaml")
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, _ := runBinary("server", "list")
 	t.Logf("Server list: %s %s", stdout, stderr)
 }
 
 func TestServer_AddCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "servers.yaml")
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	_, stderr, exitCode := runBinary("server", "add", "test-server", "echo", "hello", "--transport", "stdio")
 	t.Logf("Exit code: %d, stderr: %s", exitCode, stderr)
@@ -126,35 +147,27 @@ func TestServe_BasicStart(t *testing.T) {
 		t.Skip("Skipping in short mode")
 	}
 
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	t.Skip("Skipping serve test - requires running server")
 }
 
 func TestCache_Commands(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, _ := runBinary("cache", "--help")
 	t.Logf("Cache: %s %s", stdout, stderr)
 }
 
 func TestStatus_Commands(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, _ := runBinary("status", "--help")
 	t.Logf("Status: %s %s", stdout, stderr)
 }
 
 func TestConfig_Validation(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	tests := []struct {
 		name   string
@@ -186,8 +199,7 @@ func TestConfig_Validation(t *testing.T) {
 				t.Fatalf("Failed to write config: %v", err)
 			}
 
-			os.Setenv("LEANPROXY_CONFIG", configPath)
-			defer os.Unsetenv("LEANPROXY_CONFIG")
+			t.Setenv("LEANPROXY_CONFIG", configPath)
 
 			stdout, stderr, _ := runBinary("server", "list")
 			t.Logf("Config validation: %s %s", stdout, stderr)
@@ -196,14 +208,11 @@ func TestConfig_Validation(t *testing.T) {
 }
 
 func TestDryRunMode(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "servers.yaml")
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, exitCode := runBinary("--dry-run", "server", "add", "dryrun-test", "echo", "test")
 	t.Logf("Dry-run exit code: %d, output: %s %s", exitCode, stdout, stderr)
@@ -436,9 +445,7 @@ func TestErrorHandling(t *testing.T) {
 }
 
 func TestNewFeatures_NamespaceCommands(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("namespace", "--help")
 	t.Logf("Namespace help: %s %s", stdout, stderr)
@@ -456,9 +463,7 @@ func TestNewFeatures_NamespaceCommands(t *testing.T) {
 }
 
 func TestNewFeatures_CostCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("cost", "--help")
 	t.Logf("Cost help: %s %s", stdout, stderr)
@@ -476,9 +481,7 @@ func TestNewFeatures_CostCommand(t *testing.T) {
 }
 
 func TestNewFeatures_SavingsCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("savings", "--help")
 	t.Logf("Savings help: %s %s", stdout, stderr)
@@ -492,9 +495,7 @@ func TestNewFeatures_SavingsCommand(t *testing.T) {
 }
 
 func TestNewFeatures_FederationConfig(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "config.yaml")
@@ -530,8 +531,7 @@ optimization:
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, exitCode := runBinary("server", "list")
 	t.Logf("Server list with federation config: %s %s", stdout, stderr)
@@ -542,9 +542,7 @@ optimization:
 }
 
 func TestNewFeatures_ServerHealthCommand(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("server", "health", "--help")
 	t.Logf("Server health help: %s %s", stdout, stderr)
@@ -555,9 +553,7 @@ func TestNewFeatures_ServerHealthCommand(t *testing.T) {
 }
 
 func TestConfig_ServerWithHTTPTransport(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "servers.yaml")
@@ -573,8 +569,7 @@ func TestConfig_ServerWithHTTPTransport(t *testing.T) {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, _ := runBinary("server", "list")
 	t.Logf("Server list with HTTP transport: %s %s", stdout, stderr)
@@ -585,9 +580,7 @@ func TestConfig_ServerWithHTTPTransport(t *testing.T) {
 }
 
 func TestConfig_OptimizationSettings(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy.yaml")
@@ -638,9 +631,7 @@ bouncer:
 }
 
 func TestMCPConnection_Validation(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	homeDir, _ := os.UserHomeDir()
 	configPath := filepath.Join(homeDir, ".config/leanproxy_servers.yaml")
@@ -649,8 +640,7 @@ func TestMCPConnection_Validation(t *testing.T) {
 		t.Skipf("No config at %s, skipping MCP connection test", configPath)
 	}
 
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, exitCode := runBinary("server", "list")
 	t.Logf("Server list from config: %s %s", stdout, stderr)
@@ -669,9 +659,7 @@ func TestMCPConnection_Validation(t *testing.T) {
 }
 
 func TestMCPConnection_StdioServers(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	homeDir, _ := os.UserHomeDir()
 	configPath := filepath.Join(homeDir, ".config/leanproxy_servers.yaml")
@@ -680,8 +668,7 @@ func TestMCPConnection_StdioServers(t *testing.T) {
 		t.Skipf("No config at %s, skipping", configPath)
 	}
 
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	tests := []struct {
 		name    string
@@ -704,9 +691,7 @@ func TestMCPConnection_StdioServers(t *testing.T) {
 }
 
 func TestMCPConnection_HTTPEndpoints(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	homeDir, _ := os.UserHomeDir()
 	configPath := filepath.Join(homeDir, ".config/leanproxy_servers.yaml")
@@ -726,9 +711,7 @@ func TestMCPConnection_HTTPEndpoints(t *testing.T) {
 }
 
 func TestConfig_LoadFromHome(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	homeDir, _ := os.UserHomeDir()
 	configPath := filepath.Join(homeDir, ".config/leanproxy_servers.yaml")
@@ -737,8 +720,7 @@ func TestConfig_LoadFromHome(t *testing.T) {
 		t.Skipf("No config at %s", configPath)
 	}
 
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, exitCode := runBinary("server", "list")
 	t.Logf("Load from home config: exit=%d, %s %s", exitCode, stdout, stderr)
@@ -753,9 +735,7 @@ func TestServerRun_StdioMode(t *testing.T) {
 		t.Skip("Skipping in short mode")
 	}
 
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	homeDir, _ := os.UserHomeDir()
 	configPath := filepath.Join(homeDir, ".config/leanproxy_servers.yaml")

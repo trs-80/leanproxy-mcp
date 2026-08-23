@@ -96,13 +96,22 @@ func TestEmitSummaryEmpty(t *testing.T) {
 	am.EmitSummary("msg-123", "tools/call")
 }
 
+// captureSlog points the default slog logger at a fresh buffer for one test
+// and restores the previous default on cleanup, so no test depends on (or
+// leaks) global logger state set by another.
+func captureSlog(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
 func TestAlertManagerVerboseMode(t *testing.T) {
 	am := NewAlertManager(true)
 
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	buf := captureSlog(t, slog.LevelDebug)
 
 	am.RecordRedaction(RedactionEvent{
 		PatternName: "aws-access-key",
@@ -124,10 +133,7 @@ func TestAlertManagerVerboseMode(t *testing.T) {
 func TestNoSecretsInAlerts(t *testing.T) {
 	am := NewAlertManager(false)
 
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	buf := captureSlog(t, slog.LevelInfo)
 
 	am.RecordRedaction(RedactionEvent{
 		PatternName: "aws-access-key",
@@ -163,10 +169,7 @@ func TestAlertManagerEmitSummary(t *testing.T) {
 		Timestamp:   time.Now(),
 	})
 
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	buf := captureSlog(t, slog.LevelInfo)
 
 	am.EmitSummary("msg-123", "tools/call")
 
@@ -179,10 +182,7 @@ func TestAlertManagerEmitSummary(t *testing.T) {
 func TestAlertManagerEmitSummaryNoRedactions(t *testing.T) {
 	am := NewAlertManager(false)
 
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	buf := captureSlog(t, slog.LevelInfo)
 
 	am.EmitSummary("msg-123", "tools/call")
 
@@ -229,10 +229,7 @@ func TestAlertManagerResetAfterSummary(t *testing.T) {
 		t.Error("expected count 1 before summary")
 	}
 
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	captureSlog(t, slog.LevelInfo)
 
 	am.EmitSummary("msg-123", "tools/call")
 

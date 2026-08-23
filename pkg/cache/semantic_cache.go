@@ -290,7 +290,7 @@ func (sc *SemanticCache) Get(ctx context.Context, prompt, toolName string, embed
 		resp := entry.Response
 		sc.mu.RUnlock()
 		sc.exactHits.Add(1)
-		sc.logger.Info("cache=semantic similarity=1.000",
+		sc.logger.Debug("cache=semantic similarity=1.000",
 			"hit_type", "exact",
 			"tool", toolName,
 			"prompt_hash", key[:12])
@@ -373,7 +373,7 @@ func (sc *SemanticCache) trySemanticHit(cand vectordb.SearchResult, toolName str
 	entry.touch()
 	resp := entry.Response
 
-	sc.logger.Info(fmt.Sprintf("cache=semantic similarity=%.3f", cand.Score),
+	sc.logger.Debug(fmt.Sprintf("cache=semantic similarity=%.3f", cand.Score),
 		"hit_type", "semantic",
 		"tool", toolName,
 		"similarity", cand.Score,

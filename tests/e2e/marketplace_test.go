@@ -16,9 +16,7 @@ import (
 // existing cache (covered by the unit tests; this E2E verifies the happy path).
 
 func TestStory_11_1_MarketplaceSync_WritesCache(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -49,9 +47,7 @@ func TestStory_11_1_MarketplaceSync_WritesCache(t *testing.T) {
 //  * add --dry-run previews but does not modify the file.
 
 func TestStory_11_2_AddUnknownServer_NoMutation(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -87,9 +83,7 @@ servers: []
 }
 
 func TestStory_11_2_AddDryRun_NoFileMutation(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -113,9 +107,7 @@ servers: []
 // tokens/turn so I can pick low-risk servers.
 
 func TestStory_11_3_MarketplaceSearch_ColumnsPresent(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("marketplace", "search", "github")
 	t.Logf("marketplace search github: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)

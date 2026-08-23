@@ -59,3 +59,88 @@ func TestSearchManualTopKOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchTopKEdgeCases covers the boundary shapes of the top-k selection:
+// k larger than the record count, k of zero, an empty store, and tie scores.
+func TestSearchTopKEdgeCases(t *testing.T) {
+	newStore := func(t *testing.T) *sqliteStore {
+		t.Helper()
+		store, err := newSQLiteStore(&migrate.SQLiteVectorConfig{Path: filepath.Join(t.TempDir(), "v.db")}, 3, slog.Default())
+		if err != nil {
+			t.Fatalf("store: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
+		return store
+	}
+	ctx := context.Background()
+
+	t.Run("k greater than record count returns all records", func(t *testing.T) {
+		store := newStore(t)
+		for i, v := range [][]float32{{1, 0, 0}, {0, 1, 0}} {
+			if err := store.Upsert(ctx, VectorRecord{ID: fmt.Sprintf("r%d", i), Vector: v}); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+		}
+		results, err := store.Search(ctx, []float32{1, 0, 0}, 10)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("want all 2 records for k=10, got %d", len(results))
+		}
+	})
+
+	t.Run("k of zero falls back to the default k", func(t *testing.T) {
+		// Contract: Search treats k <= 0 as "use the default" (10), so a
+		// non-positive k still returns available records rather than nothing.
+		store := newStore(t)
+		if err := store.Upsert(ctx, VectorRecord{ID: "r0", Vector: []float32{1, 0, 0}}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		results, err := store.Search(ctx, []float32{1, 0, 0}, 0)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("want the 1 stored record via default k, got %d", len(results))
+		}
+	})
+
+	t.Run("empty store returns no results", func(t *testing.T) {
+		store := newStore(t)
+		results, err := store.Search(ctx, []float32{1, 0, 0}, 5)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("want 0 results from empty store, got %d", len(results))
+		}
+	})
+
+	t.Run("tie scores keep k results without duplication", func(t *testing.T) {
+		store := newStore(t)
+		// Three identical vectors (identical scores) plus one orthogonal.
+		for i, v := range [][]float32{{1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {0, 0, 1}} {
+			if err := store.Upsert(ctx, VectorRecord{ID: fmt.Sprintf("r%d", i), Vector: v}); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+		}
+		results, err := store.Search(ctx, []float32{1, 0, 0}, 2)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("want 2 results, got %d", len(results))
+		}
+		seen := map[string]bool{}
+		for _, r := range results {
+			if seen[r.Record.ID] {
+				t.Errorf("duplicate result %s in tie-break", r.Record.ID)
+			}
+			seen[r.Record.ID] = true
+			if r.Record.ID == "r3" {
+				t.Errorf("orthogonal record outranked a perfect-score tie: %v", results)
+			}
+		}
+	})
+}

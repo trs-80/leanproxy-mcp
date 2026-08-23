@@ -904,8 +904,19 @@ func TestIsNonLoopbackListen(t *testing.T) {
 // concurrently and their responses come back in request order regardless of
 // upstream completion order.
 func TestHandleBatchRequestAsync_ParallelPreservesOrder(t *testing.T) {
-	delays := map[string]time.Duration{"a": 300 * time.Millisecond, "b": 150 * time.Millisecond, "c": 10 * time.Millisecond}
+	// Concurrency is asserted structurally (peak in-flight > 1) rather than
+	// with a wall-clock bound, which flakes on loaded runners.
+	var inflight, peak atomic.Int32
+	delays := map[string]time.Duration{"a": 150 * time.Millisecond, "b": 75 * time.Millisecond, "c": 10 * time.Millisecond}
 	mockP := &mockPool{sendRequestFunc: func(_ context.Context, _ string, req *proxy.JSONRPCRequest, _ time.Duration) (*proxy.JSONRPCResponse, error) {
+		n := inflight.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		defer inflight.Add(-1)
 		time.Sleep(delays[req.Method])
 		return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`"` + req.Method + `"`), ID: req.ID}, nil
 	}}
@@ -913,10 +924,8 @@ func TestHandleBatchRequestAsync_ParallelPreservesOrder(t *testing.T) {
 	line := []byte(`[{"jsonrpc":"2.0","method":"a","id":1},{"jsonrpc":"2.0","method":"b","id":2},{"jsonrpc":"2.0","method":"c","id":3}]`)
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
-	start := time.Now()
 	handleBatchRequestAsync(context.Background(), line, w, &sync.Mutex{}, &mockRouter{}, &mockGatewayTools{}, mockP)
 	w.Flush()
-	elapsed := time.Since(start)
 
 	var got []struct {
 		Result string      `json:"result"`
@@ -933,8 +942,132 @@ func TestHandleBatchRequestAsync_ParallelPreservesOrder(t *testing.T) {
 			t.Errorf("response[%d] = %q, want %q (order not preserved)", i, got[i].Result, want)
 		}
 	}
-	// Serial execution would take >= 460ms.
-	if elapsed >= 400*time.Millisecond {
-		t.Errorf("batch did not run in parallel: took %v", elapsed)
+	if p := peak.Load(); p < 2 {
+		t.Errorf("batch entries did not overlap: peak in-flight = %d, want >= 2", p)
+	}
+}
+
+// TestHandleBatchRequestAsync_LargeBatchBoundedAndOrdered exercises a batch
+// larger than batchConcurrency: the semaphore must cap in-flight entries at
+// batchConcurrency while every entry still completes, in request order.
+func TestHandleBatchRequestAsync_LargeBatchBoundedAndOrdered(t *testing.T) {
+	const entries = batchConcurrency + 4
+	var inflight, peak atomic.Int32
+	mockP := &mockPool{sendRequestFunc: func(_ context.Context, _ string, req *proxy.JSONRPCRequest, _ time.Duration) (*proxy.JSONRPCResponse, error) {
+		n := inflight.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		defer inflight.Add(-1)
+		time.Sleep(5 * time.Millisecond)
+		return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`"` + req.Method + `"`), ID: req.ID}, nil
+	}}
+
+	var entriesJSON []string
+	for i := 0; i < entries; i++ {
+		entriesJSON = append(entriesJSON, fmt.Sprintf(`{"jsonrpc":"2.0","method":"m%02d","id":%d}`, i, i))
+	}
+	line := []byte("[" + strings.Join(entriesJSON, ",") + "]")
+
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	handleBatchRequestAsync(context.Background(), line, w, &sync.Mutex{}, &mockRouter{}, &mockGatewayTools{}, mockP)
+	w.Flush()
+
+	var got []struct {
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal batch response: %v (%s)", err, buf.Bytes())
+	}
+	if len(got) != entries {
+		t.Fatalf("want %d responses, got %d", entries, len(got))
+	}
+	for i := range got {
+		if want := fmt.Sprintf("m%02d", i); got[i].Result != want {
+			t.Errorf("response[%d] = %q, want %q (order not preserved)", i, got[i].Result, want)
+		}
+	}
+	if p := peak.Load(); p > batchConcurrency {
+		t.Errorf("semaphore did not bound concurrency: peak in-flight = %d, cap %d", p, batchConcurrency)
+	}
+}
+
+// TestHandleBatchRequestAsync_EmptyBatch: an empty array is rejected with a
+// single Invalid Request error, not treated as a zero-response batch.
+func TestHandleBatchRequestAsync_EmptyBatch(t *testing.T) {
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	handleBatchRequestAsync(context.Background(), []byte(`[]`), w, &sync.Mutex{}, &mockRouter{}, &mockGatewayTools{}, &mockPool{})
+	w.Flush()
+
+	var resp proxy.JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal error response: %v (%s)", err, buf.Bytes())
+	}
+	if resp.Error == nil || resp.Error.Code != errors.ErrCodeInvalidRequest {
+		t.Fatalf("want Invalid Request error for empty batch, got %+v", resp)
+	}
+}
+
+// TestHandleBatchRequestAsync_NotificationsSkipped: entries with a null id
+// are notifications — they must produce no response slot and must not be
+// forwarded upstream.
+func TestHandleBatchRequestAsync_NotificationsSkipped(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	mockP := &mockPool{sendRequestFunc: func(_ context.Context, _ string, req *proxy.JSONRPCRequest, _ time.Duration) (*proxy.JSONRPCResponse, error) {
+		upstreamCalls.Add(1)
+		return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`"ok"`), ID: req.ID}, nil
+	}}
+
+	line := []byte(`[{"jsonrpc":"2.0","method":"a","id":1},{"jsonrpc":"2.0","method":"notify"},{"jsonrpc":"2.0","method":"b","id":2}]`)
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	handleBatchRequestAsync(context.Background(), line, w, &sync.Mutex{}, &mockRouter{}, &mockGatewayTools{}, mockP)
+	w.Flush()
+
+	var got []proxy.JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal batch response: %v (%s)", err, buf.Bytes())
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 responses (notification produces none), got %d", len(got))
+	}
+	if n := upstreamCalls.Load(); n != 2 {
+		t.Errorf("notification must not be forwarded upstream: %d upstream calls, want 2", n)
+	}
+}
+
+// TestHandleBatchRequestAsync_MixedRoutingFailure: an unroutable entry gets a
+// per-entry Method Not Found error in its slot while its neighbors succeed.
+func TestHandleBatchRequestAsync_MixedRoutingFailure(t *testing.T) {
+	mockR := &mockRouter{routeFunc: func(_ context.Context, method string) (*registry.ServerEntry, error) {
+		if method == "bad" {
+			return nil, fmt.Errorf("no route")
+		}
+		return &registry.ServerEntry{ID: "s1"}, nil
+	}}
+
+	line := []byte(`[{"jsonrpc":"2.0","method":"a","id":1},{"jsonrpc":"2.0","method":"bad","id":2},{"jsonrpc":"2.0","method":"b","id":3}]`)
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	handleBatchRequestAsync(context.Background(), line, w, &sync.Mutex{}, mockR, &mockGatewayTools{}, &mockPool{})
+	w.Flush()
+
+	var got []proxy.JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal batch response: %v (%s)", err, buf.Bytes())
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 responses, got %d", len(got))
+	}
+	if got[0].Error != nil || got[2].Error != nil {
+		t.Errorf("valid entries must succeed alongside a failing one: %+v", got)
+	}
+	if got[1].Error == nil || got[1].Error.Code != errors.ErrCodeMethodNotFound {
+		t.Errorf("unroutable entry should carry Method Not Found in its slot, got %+v", got[1])
 	}
 }

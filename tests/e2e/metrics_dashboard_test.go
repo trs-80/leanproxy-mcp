@@ -21,37 +21,30 @@ import (
 // and that the endpoint can be disabled via --metrics-bind off.
 
 func TestStory_14_1_MetricsEndpoint_JSONShape(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	persistLog := "/tmp/leanproxy-e2e-metrics.log"
-	if err := startServe(t, []string{
+	// Bind :0 and read the actual port from the log — no freePort race.
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
-		"--metrics-bind", fmt.Sprintf("127.0.0.1:%d", port),
+		"--metrics-bind", "127.0.0.1:0",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-	defer func() {
+	})
+	persistLog := "/tmp/leanproxy-e2e-metrics.log"
+	t.Cleanup(func() {
 		if data, err := os.ReadFile(logFile); err == nil {
 			os.WriteFile(persistLog, data, 0644)
 		}
-	}()
+	})
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", port)
+	url := loopbackURL(t, boundAddr(t, logFile, "metrics", 10*time.Second), "/metrics")
 	resp, body := waitForHTTP(t, url, 15*time.Second)
 	if resp.StatusCode != http.StatusOK {
 		log, _ := os.ReadFile(logFile)
@@ -72,9 +65,7 @@ servers: []
 }
 
 func TestStory_14_1_MetricsEndpoint_DisabledByFlag(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	port := freePort(t)
 	testDir := t.TempDir()
@@ -83,20 +74,15 @@ func TestStory_14_1_MetricsEndpoint_DisabledByFlag(t *testing.T) {
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	// Wait for full startup (any enabled listener would be bound by the time
+	// "server ready" is logged), then confirm nothing answers on the port.
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(2 * time.Second)
+	})
 
 	_, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
 	if err == nil {
@@ -110,31 +96,24 @@ servers: []
 // the metrics endpoint by hand.
 
 func TestStory_18_1_Dashboard_IndexHTML(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
-		"--dashboard-bind", fmt.Sprintf("127.0.0.1:%d", port),
+		"--dashboard-bind", "127.0.0.1:0",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
+	})
+	addr := boundAddr(t, logFile, "dashboard", 10*time.Second)
 
-	resp, body := waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/", port), 10*time.Second)
+	resp, body := waitForHTTP(t, loopbackURL(t, addr, "/"), 10*time.Second)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / returned %d, body=%s", resp.StatusCode, body)
 	}
@@ -147,7 +126,7 @@ servers: []
 	// /api/dashboard returns the cards HTML which IS rendered. Verify the
 	// cards endpoint contract here; the root / template is separately
 	// covered by pkg/dashboard unit tests.
-	respCards, cardsBody := waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/dashboard", port), 5*time.Second)
+	respCards, cardsBody := waitForHTTP(t, loopbackURL(t, addr, "/api/dashboard"), 5*time.Second)
 	if respCards.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/dashboard returned %d, body=%s", respCards.StatusCode, cardsBody)
 	}
@@ -159,31 +138,24 @@ servers: []
 }
 
 func TestStory_18_1_Dashboard_JSONAPI(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
-		"--dashboard-bind", fmt.Sprintf("127.0.0.1:%d", port),
+		"--dashboard-bind", "127.0.0.1:0",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
+	})
+	addr := boundAddr(t, logFile, "dashboard", 10*time.Second)
 
-	resp, body := waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/dashboard/json", port), 10*time.Second)
+	resp, body := waitForHTTP(t, loopbackURL(t, addr, "/api/dashboard/json"), 10*time.Second)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/dashboard/json returned %d, body=%s", resp.StatusCode, body)
 	}
@@ -201,36 +173,29 @@ servers: []
 }
 
 func TestStory_18_1_Dashboard_NonLoopbackRequiresToken(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
-		"--dashboard-bind", fmt.Sprintf("0.0.0.0:%d", port),
+		"--dashboard-bind", "0.0.0.0:0",
 		"--dashboard-token", "supersecret",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
+	})
+	addr := boundAddr(t, logFile, "dashboard", 10*time.Second)
 
 	// Wait for the dashboard to be up.
-	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/dashboard", port), 10*time.Second)
+	waitForHTTP(t, loopbackURL(t, addr, "/api/dashboard"), 10*time.Second)
 
 	// Loopback request without token: should succeed (no auth required from loopback).
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	resp, err := http.Get(loopbackURL(t, addr, "/"))
 	if err != nil {
 		t.Fatalf("request to loopback dashboard failed: %v", err)
 	}
@@ -246,9 +211,7 @@ servers: []
 }
 
 func TestStory_18_1_Dashboard_DisabledByFlag(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	port := freePort(t)
 	testDir := t.TempDir()
@@ -257,20 +220,16 @@ func TestStory_18_1_Dashboard_DisabledByFlag(t *testing.T) {
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	// Wait for full startup (any enabled listener would be bound by the time
+	// "server ready" is logged), then confirm nothing answers on the port.
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
+	})
 
-	time.Sleep(2 * time.Second)
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
 	if err == nil && resp != nil {
 		resp.Body.Close()
@@ -281,31 +240,24 @@ servers: []
 // Helper used by story 18-2 (drill-down) and 18-1 (dashboard).
 
 func TestStory_18_2_Drilldown_ServersEndpoint(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
-		"--dashboard-bind", fmt.Sprintf("127.0.0.1:%d", port),
+		"--dashboard-bind", "127.0.0.1:0",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
+	})
+	addr := boundAddr(t, logFile, "dashboard", 10*time.Second)
 
-	resp, body := waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/dashboard/servers", port), 10*time.Second)
+	resp, body := waitForHTTP(t, loopbackURL(t, addr, "/api/dashboard/servers"), 10*time.Second)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/dashboard/servers returned %d, body=%s", resp.StatusCode, body)
 	}

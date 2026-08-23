@@ -85,7 +85,7 @@ func TestEmbedToolCallPoolError(t *testing.T) {
 }
 
 func TestEmbedToolCallPoolFull(t *testing.T) {
-	blocker := &blockingEmbedder{block: make(chan struct{})}
+	blocker := &blockingEmbedder{block: make(chan struct{}), started: make(chan struct{})}
 	pool := embedder.NewPool(blocker, embedder.PoolConfig{Size: 1, Queue: 1}, slog.Default())
 
 	SetGlobalEmbedPool(pool)
@@ -96,11 +96,15 @@ func TestEmbedToolCallPoolFull(t *testing.T) {
 	}()
 
 	_ = pool.Embed(context.Background(), embedder.EmbedRequest{ToolName: "filler"})
-	// Give the worker a moment to enter the blocking embed call before we
-	// queue the second job — otherwise the race detector can land "filler2"
-	// in the queue before "filler" reaches the blocking call, and the third
-	// embed then fits in the queue instead of hitting the pool-full path.
-	time.Sleep(2 * time.Millisecond)
+	// Wait for the worker to enter the blocking embed call before queueing
+	// the second job — otherwise "filler2" can land in the queue before
+	// "filler" reaches the blocking call, and the third embed then fits in
+	// the queue instead of hitting the pool-full path.
+	select {
+	case <-blocker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never entered the blocking embed call")
+	}
 	_ = pool.Embed(context.Background(), embedder.EmbedRequest{ToolName: "filler2"})
 
 	// Drive through EmbedResultHandler (set up before triggering EmbedToolCall)
@@ -271,9 +275,16 @@ func (t *testEmbedder) Close() error                { return nil }
 
 type blockingEmbedder struct {
 	block chan struct{}
+	// started is closed when a worker first enters Embed, so tests can wait
+	// for "worker is parked in the blocking call" instead of sleeping.
+	started   chan struct{}
+	startOnce sync.Once
 }
 
 func (b *blockingEmbedder) Embed(_ context.Context, _ embedder.EmbedRequest) (embedder.Embedding, error) {
+	if b.started != nil {
+		b.startOnce.Do(func() { close(b.started) })
+	}
 	<-b.block
 	return embedder.Embedding{}, nil
 }

@@ -13,9 +13,7 @@ import (
 // so I can attribute the savings the proxy is delivering.
 
 func TestStory_10_3_CacheStats_DefaultMarkdown(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("cache", "stats")
 	t.Logf("cache stats: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
@@ -45,9 +43,7 @@ func TestStory_10_3_CacheStats_DefaultMarkdown(t *testing.T) {
 }
 
 func TestStory_10_3_CacheStats_JSON(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	stdout, stderr, exitCode := runBinary("cache", "stats", "--json")
 	t.Logf("cache stats --json: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
@@ -74,9 +70,7 @@ func TestStory_10_3_CacheStats_JSON(t *testing.T) {
 }
 
 func TestStory_10_3_CacheStats_NoTraffic(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	emptyCache := testDir + "/cache-stats-empty.json"
@@ -100,9 +94,7 @@ func TestStory_10_3_CacheStats_NoTraffic(t *testing.T) {
 // similarity, evicted entries) so I can tune the threshold.
 
 func TestStory_12_3_SemanticCache_DefaultEmpty(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	statsPath := testDir + "/semantic-stats.json"
@@ -129,9 +121,7 @@ func TestStory_12_3_SemanticCache_DefaultEmpty(t *testing.T) {
 }
 
 func TestStory_12_3_SemanticCache_JSON(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	statsPath := testDir + "/semantic-stats.json"
@@ -160,9 +150,7 @@ func TestStory_12_3_SemanticCache_JSON(t *testing.T) {
 // the serve binary starts.
 
 func TestStory_10_2_CacheStrategyFlagAccepted(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	for _, strategy := range []string{"off", "balanced", "aggressive"} {
 		t.Run(strategy, func(t *testing.T) {

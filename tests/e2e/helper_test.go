@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -35,8 +36,10 @@ servers:
 	return path
 }
 
-// freePort asks the OS for a free TCP port. Used by HTTP-endpoint tests so we
-// don't fight for a fixed port across parallel test runs.
+// freePort asks the OS for a free TCP port. Only suitable for negative tests
+// that probe a port nothing should be listening on; positive tests must bind
+// ":0" and recover the real address via boundAddr, because a port returned
+// here can be re-taken by anyone between Close and the server's bind.
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -132,6 +135,75 @@ func findFirstArg(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// waitForServeReady polls until the serve process has logged its
+// startup-complete line ("server ready") or has exited, whichever comes
+// first. It replaces fixed startup sleeps: a crash fails immediately with the
+// captured log, and a healthy start returns as soon as the server is up.
+func waitForServeReady(t *testing.T, pidFile, logFile string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		logData, _ := os.ReadFile(logFile)
+		if bytes.Contains(logData, []byte("server ready")) {
+			return
+		}
+		if !pidAlive(t, pidFile) {
+			t.Fatalf("serve exited before becoming ready. log:\n%s", logData)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for serve to become ready. log:\n%s", timeout, logData)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// startServeAndWait starts a serve process with args, registers cleanup, and
+// blocks until the server logs readiness (or fails the test with the log if
+// it crashes). It returns the pidfile and logfile paths for assertions.
+func startServeAndWait(t *testing.T, args []string) (pidFile, logFile string) {
+	t.Helper()
+	runDir := t.TempDir()
+	pidFile = filepath.Join(runDir, "leanproxy.pid")
+	logFile = filepath.Join(runDir, "leanproxy.log")
+	if err := startServe(t, args, pidFile, logFile); err != nil {
+		t.Fatalf("failed to start serve: %v", err)
+	}
+	t.Cleanup(func() { stopServe(t, pidFile, logFile) })
+	waitForServeReady(t, pidFile, logFile, 15*time.Second)
+	return pidFile, logFile
+}
+
+// boundAddr extracts the address a component actually bound, from its
+// startup log line (e.g. `msg="metrics endpoint started" bind=127.0.0.1:52341`).
+// Tests pass an explicit ":0" bind and read the address back, which removes
+// the freePort allocate-close-rebind race entirely.
+func boundAddr(t *testing.T, logFile, component string, timeout time.Duration) string {
+	t.Helper()
+	re := regexp.MustCompile(`msg="` + component + ` endpoint started" bind=(\S+)`)
+	deadline := time.Now().Add(timeout)
+	for {
+		logData, _ := os.ReadFile(logFile)
+		if m := re.FindSubmatch(logData); m != nil {
+			return string(m[1])
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s endpoint address in log:\n%s", component, logData)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// loopbackURL converts a bound address (possibly on a wildcard interface)
+// into a URL reachable via loopback.
+func loopbackURL(t *testing.T, addr, path string) string {
+	t.Helper()
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("unparseable bound address %q: %v", addr, err)
+	}
+	return "http://127.0.0.1:" + port + path
 }
 
 // waitForHTTP polls url until it returns 2xx or timeout elapses, returning

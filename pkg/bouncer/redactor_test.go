@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -219,7 +220,18 @@ func TestRedactAPIKeyCaseInsensitive(t *testing.T) {
 	}
 }
 
+// setDiscardSlog routes the package's default-slog output to io.Discard for
+// the duration of a benchmark, so measurements reflect redaction work rather
+// than logging I/O, regardless of the configured default level.
+func setDiscardSlog(b *testing.B) {
+	b.Helper()
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.Cleanup(func() { slog.SetDefault(prev) })
+}
+
 func BenchmarkRedactSmallMessage(b *testing.B) {
+	setDiscardSlog(b)
 	input := `{"api_key": "AKIAIOSFODNN7EXAMPLE", "data": "hello world"}`
 	redactor := NewRedactor(PatternsToRegexps(BuiltInPatterns))
 
@@ -230,6 +242,7 @@ func BenchmarkRedactSmallMessage(b *testing.B) {
 }
 
 func BenchmarkRedactStreamSmallMessage(b *testing.B) {
+	setDiscardSlog(b)
 	input := `{"api_key": "AKIAIOSFODNN7EXAMPLE", "data": "hello world"}`
 	redactor := NewRedactor(PatternsToRegexps(BuiltInPatterns))
 	reader := strings.NewReader(input)

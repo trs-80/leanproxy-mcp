@@ -97,6 +97,7 @@ func BenchmarkRedactJSONCleanLarge(b *testing.B) {
 		args = append(args, map[string]interface{}{"path": "/srv/app/file.go", "content": strings.Repeat("the quick brown fox ", 20), "n": i})
 	}
 	payload, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": args})
+	setDiscardSlog(b)
 	r := NewRedactor(PatternsToRegexps(BuiltInPatterns))
 	b.SetBytes(int64(len(payload)))
 	b.ReportAllocs()
@@ -107,6 +108,7 @@ func BenchmarkRedactJSONCleanLarge(b *testing.B) {
 }
 
 func BenchmarkRedactSecretsClean(b *testing.B) {
+	setDiscardSlog(b)
 	in := strings.Repeat("ordinary log line with no secrets in it at all\n", 50)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

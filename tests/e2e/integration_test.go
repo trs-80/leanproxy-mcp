@@ -94,9 +94,7 @@ func TestMCPServer_LoadAndToolCall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
@@ -299,9 +297,7 @@ func TestMCPServer_ServerListAfterLoad(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
@@ -329,8 +325,7 @@ func TestMCPServer_ServerListAfterLoad(t *testing.T) {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	os.Setenv("LEANPROXY_CONFIG", configPath)
-	defer os.Unsetenv("LEANPROXY_CONFIG")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
 	stdout, stderr, exitCode := runBinary("server", "list")
 	t.Logf("server list output: stdout=%s stderr=%s exit=%d", stdout, stderr, exitCode)

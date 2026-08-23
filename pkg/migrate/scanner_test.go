@@ -15,16 +15,8 @@ func TestOpenCodeScanner_Name(t *testing.T) {
 }
 
 func TestOpenCodeScanner_Scan_NotFound(t *testing.T) {
-	tmpDir := os.TempDir()
-	emptyDir := filepath.Join(tmpDir, "empty_home")
-	if err := os.MkdirAll(emptyDir, 0700); err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(emptyDir)
-
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", emptyDir)
-	defer os.Setenv("HOME", originalHome)
+	emptyDir := t.TempDir()
+	t.Setenv("HOME", emptyDir)
 
 	s := &OpenCodeScanner{}
 	servers, err := s.Scan(context.Background())
@@ -37,14 +29,13 @@ func TestOpenCodeScanner_Scan_NotFound(t *testing.T) {
 }
 
 func TestOpenCodeScanner_Scan_Found(t *testing.T) {
-	tmpDir := os.TempDir()
+	tmpDir := t.TempDir()
 	cfgDir := filepath.Join(tmpDir, ".config", "opencode")
 	cfgPath := filepath.Join(cfgDir, "opencode.json")
 
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {
 		t.Fatalf("Failed to create config dir: %v", err)
 	}
-	defer os.RemoveAll(filepath.Join(tmpDir, ".config"))
 
 	cfg := `{
 		"mcp": {
@@ -59,9 +50,7 @@ func TestOpenCodeScanner_Scan_Found(t *testing.T) {
 		t.Fatalf("Failed to write temp config: %v", err)
 	}
 
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", originalHome)
+	t.Setenv("HOME", tmpDir)
 
 	s := &OpenCodeScanner{}
 	servers, err := s.Scan(context.Background())

@@ -20,9 +20,7 @@ import (
 // flag; an invalid file should be surfaced as an error.
 
 func TestStory_10_1_ProvidersConfig_FlagAccepted(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -37,31 +35,18 @@ servers: []
       - api.anthropic.com
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--providers-config", providersPath,
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(1 * time.Second)
-	if !pidAlive(t, pidFile) {
-		log, _ := os.ReadFile(logFile)
-		t.Fatalf("serve exited prematurely with --providers-config. log:\n%s", string(log))
-	}
+	})
 }
 
 func TestStory_10_1_ProvidersConfig_InvalidFile(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -95,9 +80,7 @@ servers: []
 // being disabled (so serve must be backward-compatible).
 
 func TestStory_15_1_ModelRouter_DisabledByDefault(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -105,30 +88,17 @@ func TestStory_15_1_ModelRouter_DisabledByDefault(t *testing.T) {
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(1 * time.Second)
-	if !pidAlive(t, pidFile) {
-		log, _ := os.ReadFile(logFile)
-		t.Fatalf("serve exited prematurely without --model-router. log:\n%s", string(log))
-	}
+	})
 }
 
 func TestStory_15_1_ModelRouter_FlagAccepted(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -150,9 +120,7 @@ tiers:
     model: claude-opus-4-1
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--model-router",
@@ -160,16 +128,7 @@ tiers:
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(1 * time.Second)
-	if !pidAlive(t, pidFile) {
-		log, _ := os.ReadFile(logFile)
-		t.Fatalf("serve exited prematurely with --model-router. log:\n%s", string(log))
-	}
+	})
 }
 
 // Story 15-2 / 15-3: Ollama sidecar + MLX apple-silicon (Epic 15)
@@ -183,9 +142,7 @@ tiers:
 // surface here.
 
 func TestStory_15_2_OllamaSidecar_FlagsAccepted(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -193,9 +150,7 @@ func TestStory_15_2_OllamaSidecar_FlagsAccepted(t *testing.T) {
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--sidecar-provider", "ollama",
@@ -204,22 +159,11 @@ servers: []
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(1 * time.Second)
-	if !pidAlive(t, pidFile) {
-		log, _ := os.ReadFile(logFile)
-		t.Fatalf("serve exited prematurely with ollama sidecar flags. log:\n%s", string(log))
-	}
+	})
 }
 
 func TestStory_15_2_OllamaEmbedder_FlagsAccepted(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -227,9 +171,7 @@ func TestStory_15_2_OllamaEmbedder_FlagsAccepted(t *testing.T) {
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--embed-provider", "ollama",
@@ -238,16 +180,7 @@ servers: []
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(1 * time.Second)
-	if !pidAlive(t, pidFile) {
-		log, _ := os.ReadFile(logFile)
-		t.Fatalf("serve exited prematurely with --embed-provider=ollama. log:\n%s", string(log))
-	}
+	})
 }
 
 // Story 12-1/12-2: Embed tool-call payloads + pluggable vector store (Epic 12)
@@ -256,9 +189,7 @@ servers: []
 // pinecone) so I can swap implementations without code changes.
 
 func TestStory_12_2_VectorStore_Default(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -278,25 +209,14 @@ func TestStory_12_2_VectorStore_Default(t *testing.T) {
 servers: []
 `)
 
-	pidFile := filepath.Join(testDir, "leanproxy.pid")
-	logFile := filepath.Join(testDir, "leanproxy.log")
-	if err := startServe(t, []string{
+	startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--embed-provider", "",
 		"--metrics-bind", "off",
 		"--dashboard-bind", "off",
 		"--upstream", "http://127.0.0.1:1",
-	}, pidFile, logFile); err != nil {
-		t.Fatalf("failed to start serve: %v", err)
-	}
-	defer stopServe(t, pidFile, logFile)
-
-	time.Sleep(1 * time.Second)
-	if !pidAlive(t, pidFile) {
-		log, _ := os.ReadFile(logFile)
-		t.Fatalf("serve exited prematurely with default vector store. log:\n%s", string(log))
-	}
+	})
 }
 
 // Story 17-1/17-2: Budget configuration + auto-throttle (Epic 17)
@@ -310,9 +230,7 @@ servers: []
 // unit tests in pkg/budget.
 
 func TestStory_17_1_BudgetConfig_LoadsCleanly(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -340,9 +258,7 @@ servers: []
 }
 
 func TestStory_17_2_BudgetFlag_Parsed(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	// Note: 17-2's --ignore-budget flag and X-Ignore-Budget header are
 	// documented in the budget package (pkg/budget/actions.go) but are NOT
@@ -385,9 +301,7 @@ servers: []
 // --dry-run to avoid mutating the user's real config.
 
 func TestStory_16_1_AddGitHub_DryRunPreview(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -407,9 +321,7 @@ servers: []
 // containment so the LLM can only access allowed directories.
 
 func TestStory_16_2_AddFilesystem_DryRunPreview(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -430,9 +342,7 @@ servers: []
 // connection pooling so I don't have to set up pgvector/redis-py.
 
 func TestStory_16_3_AddPostgres_DryRunPreview(t *testing.T) {
-	if !binaryAvailable() {
-		t.Skip("Binary not in tests/e2e/")
-	}
+	requireBinary(t)
 
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
@@ -454,19 +364,24 @@ servers: []
 	}
 }
 
-// pidAlive returns true if a process is alive at the PID in pidFile.
+// pidAlive returns true if a process is alive at the PID in pidFile. It logs
+// why it answered false so "server crashed" and "pidfile never written" stay
+// distinguishable in failure output.
 func pidAlive(t *testing.T, pidFile string) bool {
 	t.Helper()
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
+		t.Logf("pidAlive: reading pidfile: %v", err)
 		return false
 	}
 	var pid int
 	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil || pid <= 0 {
+		t.Logf("pidAlive: pidfile %s content %q unparseable (err=%v)", pidFile, string(data), err)
 		return false
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
+		t.Logf("pidAlive: FindProcess(%d): %v", pid, err)
 		return false
 	}
 	// Signal 0 (nil) returns an error if the process no longer exists.

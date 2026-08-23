@@ -196,17 +196,17 @@ func TestPoolEmbedError(t *testing.T) {
 }
 
 func TestPoolFullQueue(t *testing.T) {
-	blocker := &blockingEmbedder{block: make(chan struct{})}
+	blocker := &blockingEmbedder{block: make(chan struct{}), started: make(chan struct{})}
 	pool := NewPool(blocker, PoolConfig{Size: 1, Queue: 1}, nil)
 
 	// Fill both slots: one in worker, one in queue.
 	if ch := pool.Embed(context.Background(), EmbedRequest{ToolName: "a"}); ch == nil {
 		t.Fatal("nil channel for a")
 	}
-	// Give the worker a moment to actually pick up "a" and enter blocker.Embed.
-	// Without this sleep, the race detector can schedule j2 into the queue
-	// before j1 has reached the blocking call, leaving a queue slot for j3.
-	time.Sleep(2 * time.Millisecond)
+	// Wait until the worker has picked up "a" and entered blocker.Embed.
+	// Otherwise "b" can land in the queue before "a" reaches the blocking
+	// call, leaving a queue slot for "c".
+	blocker.waitStarted(t)
 	if ch := pool.Embed(context.Background(), EmbedRequest{ToolName: "b"}); ch == nil {
 		t.Fatal("nil channel for b")
 	}
@@ -232,14 +232,32 @@ func TestPoolFullQueue(t *testing.T) {
 
 type blockingEmbedder struct {
 	block chan struct{}
+	// started is closed when a worker first enters Embed, so tests can wait
+	// for "worker is parked in the blocking call" deterministically instead
+	// of sleeping and hoping the scheduler got there first.
+	started   chan struct{}
+	startOnce sync.Once
 }
 
 func (b *blockingEmbedder) Embed(ctx context.Context, _ EmbedRequest) (Embedding, error) {
+	if b.started != nil {
+		b.startOnce.Do(func() { close(b.started) })
+	}
 	select {
 	case <-b.block:
 		return Embedding{}, nil
 	case <-ctx.Done():
 		return Embedding{}, ctx.Err()
+	}
+}
+
+// waitStarted blocks until the embedder has entered its blocking call.
+func (b *blockingEmbedder) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-b.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never entered the blocking embed call")
 	}
 }
 func (b *blockingEmbedder) Provider() Provider { return ProviderOllama }
@@ -413,14 +431,14 @@ func TestPoolDoubleClose(t *testing.T) {
 // inside in-flight HTTP calls observe ctx.Done() when Close() is invoked and
 // exit promptly instead of waiting for the HTTP timeout (5–10s).
 func TestPoolCloseCancelsInFlight(t *testing.T) {
-	blocker := &blockingEmbedder{block: make(chan struct{})}
+	blocker := &blockingEmbedder{block: make(chan struct{}), started: make(chan struct{})}
 	pool := NewPool(blocker, PoolConfig{Size: 1}, nil)
 
 	// Submit a job; worker picks it up and blocks inside Embed().
 	outCh := pool.Embed(context.Background(), EmbedRequest{ToolName: "slow"})
 
-	// Give the worker a moment to start the HTTP call.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the worker to enter the (stand-in for an) HTTP call.
+	blocker.waitStarted(t)
 
 	// Close should cancel the in-flight call within the HTTP timeout window.
 	closeStart := time.Now()

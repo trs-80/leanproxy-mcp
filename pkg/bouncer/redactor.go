@@ -239,7 +239,7 @@ func (r *Redactor) RedactJSON(data []byte) ([]byte, int, error) {
 		slog.Warn("invalid JSON input, falling back to byte-level redaction", "error", err)
 		redacted, count := r.redactChunkWithCount(data)
 		if count > 0 {
-			slog.Info("redaction complete", "secrets_found", count, "mode", "bytes")
+			slog.Debug("redaction complete", "secrets_found", count, "mode", "bytes")
 		}
 		return redacted, count, nil
 	}
@@ -251,7 +251,7 @@ func (r *Redactor) RedactJSON(data []byte) ([]byte, int, error) {
 	}
 
 	if count > 0 {
-		slog.Info("redaction complete", "secrets_found", count)
+		slog.Debug("redaction complete", "secrets_found", count)
 	}
 
 	return redacted, count, nil

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -469,8 +471,14 @@ func TestGlobalSemanticCache(t *testing.T) {
 	}
 }
 
+// discardLogger keeps benchmark measurements free of logging I/O, whatever
+// the default slog level is.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func BenchmarkSemanticCacheGetExact(b *testing.B) {
-	sc := NewSemanticCache(nil, nil, time.Hour)
+	sc := NewSemanticCache(nil, discardLogger(), time.Hour)
 	ctx := context.Background()
 	sc.Set(ctx, "bench prompt", json.RawMessage(`{"result":"ok"}`), "tool", nil)
 
@@ -483,7 +491,7 @@ func BenchmarkSemanticCacheGetExact(b *testing.B) {
 }
 
 func BenchmarkSemanticCacheSet(b *testing.B) {
-	sc := NewSemanticCache(nil, nil, time.Hour)
+	sc := NewSemanticCache(nil, discardLogger(), time.Hour)
 	ctx := context.Background()
 	resp := json.RawMessage(`{"result":"ok"}`)
 

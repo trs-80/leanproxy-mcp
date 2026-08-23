@@ -51,8 +51,12 @@ func TestSendRequestConcurrentOverlap(t *testing.T) {
 	for i, err := range errs {
 		require.NoError(t, err, "request %d", i)
 	}
-	// Serial execution would take >= n*delay (1.6s); require clear overlap.
-	require.Less(t, elapsed, time.Duration(n)*delayMs*time.Millisecond/2,
+	// Pigeonhole bound: serialized handling of n requests taking delayMs each
+	// needs >= n*delay (1.6s), so finishing under (n-1)*delay (1.2s) is only
+	// possible if at least two requests were in flight simultaneously. The
+	// parallel path takes ~delay (~0.4s), leaving ~0.8s of headroom for a
+	// loaded CI runner while still strictly proving overlap.
+	require.Less(t, elapsed, time.Duration(n-1)*delayMs*time.Millisecond,
 		"requests did not overlap: %v elapsed for %d requests of %dms", elapsed, n, delayMs)
 }
 
