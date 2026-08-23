@@ -299,3 +299,30 @@ func TestSearchTools_PrecisionDropsPartialsWhenFullExists(t *testing.T) {
 		t.Errorf("partial match should be dropped when full matches exist:\n%s", text)
 	}
 }
+
+// TestToolsListStubs_SchemasAreValidToolSchemas: every stub must carry
+// input_schema.type == "object" — the Anthropic API rejects anything else and
+// clients silently drop the tool, making lazy mode invisibly toolless.
+func TestToolsListStubs_SchemasAreValidToolSchemas(t *testing.T) {
+	h := NewHandler(newMockPool(), nil)
+	h.EnableLazyLoading(0)
+	seedToolCache(h, "github", Tool{Name: "a_tool", Description: "d", InputSchema: json.RawMessage(`{}`)})
+
+	resp, err := h.handleToolsList(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ToolsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range result.Tools {
+		var schema struct {
+			Type string `json:"type"`
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		if err := json.Unmarshal(raw, &schema); err != nil || schema.Type != "object" {
+			t.Errorf("tool %s: input schema %s lacks type object", tool.Name, raw)
+		}
+	}
+}

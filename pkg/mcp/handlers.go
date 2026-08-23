@@ -238,7 +238,11 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 				gatewayTools = append(gatewayTools, Tool{
 					Name:        stub.Name,
 					Description: stub.Description,
-					InputSchema: json.RawMessage("{}"),
+					// Minimal but VALID schema: the Anthropic API rejects tools
+					// whose input_schema lacks type "object", and clients drop
+					// rejected tools silently — a bare {} made every stub
+					// invisible to the model (verified live 2026-08-23).
+					InputSchema: json.RawMessage(`{"type":"object"}`),
 				})
 			}
 		}
