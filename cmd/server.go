@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
 	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
 	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
 	"github.com/mmornati/leanproxy-mcp/pkg/pool"
@@ -474,6 +475,10 @@ func runServerRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Same redactor `serve` uses; this entrypoint previously forwarded
+	// everything in both directions without any redaction.
+	initRedactor(cfg)
+
 	return handleStdio(ctx, handler, stdioPool, statusStore)
 }
 
@@ -615,9 +620,6 @@ func joinStrings(strs []string) string {
 }
 
 func handleStdio(ctx context.Context, handler *mcp.Handler, stdioPool *pool.StdioPool, statusStore *statusfile.FileStatusStore) error {
-	reader := bufio.NewReader(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-
 	slog.Info("leanproxy-mcp stdio mode started")
 
 	defer func() {
@@ -625,6 +627,23 @@ func handleStdio(ctx context.Context, handler *mcp.Handler, stdioPool *pool.Stdi
 			statusStore.RemoveFile()
 		}
 	}()
+
+	return runStdioLoop(ctx, os.Stdin, os.Stdout, handler, stdioPool)
+}
+
+// stdioRequestHandler is the subset of *mcp.Handler the stdio loop needs.
+type stdioRequestHandler interface {
+	HandleRequest(ctx context.Context, req *mcp.Request) (*mcp.Response, error)
+}
+
+// runStdioLoop reads newline-delimited JSON-RPC from in, redacts request
+// params before they reach the handler (and thus any upstream server,
+// cache or log) and redacts results and errors before they are written to
+// out. A redaction failure is fail-closed: the request is answered with a
+// generic error and not processed.
+func runStdioLoop(ctx context.Context, in io.Reader, out io.Writer, handler stdioRequestHandler, stdioPool *pool.StdioPool) error {
+	reader := bufio.NewReader(in)
+	writer := bufio.NewWriter(out)
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -655,21 +674,81 @@ func handleStdio(ctx context.Context, handler *mcp.Handler, stdioPool *pool.Stdi
 			continue
 		}
 
+		if err := redactMCPRequest(&req); err != nil {
+			slog.Error("redaction failed, request rejected", "error", err, "method", req.Method)
+			writeStdioResponse(writer, &mcp.Response{
+				JSONRPC: mcp.JSONRPCVersion,
+				Error:   mcp.NewError(mcp.ErrCodeInternalError, redactionFailedMessage),
+				ID:      req.ID,
+			})
+			continue
+		}
+
 		resp, err := handler.HandleRequest(ctx, &req)
 		if err != nil {
 			slog.Error("handler error", "error", err, "method", req.Method)
 		}
 
 		if resp != nil {
+			if err := redactMCPResponse(resp); err != nil {
+				slog.Error("response redaction failed, response withheld", "error", err, "method", req.Method)
+				resp = &mcp.Response{
+					JSONRPC: mcp.JSONRPCVersion,
+					Error:   mcp.NewError(mcp.ErrCodeInternalError, redactionFailedMessage),
+					ID:      req.ID,
+				}
+			}
 			writeStdioResponse(writer, resp)
 		}
 
 		if req.Method == mcp.MethodShutdown {
 			slog.Info("shutdown request received")
-			stdioPool.Close()
+			if stdioPool != nil {
+				stdioPool.Close()
+			}
 			return nil
 		}
 	}
+}
+
+// redactMCPRequest redacts req.Params in place using the global redactor.
+func redactMCPRequest(req *mcp.Request) error {
+	r := globalRedactor.Load()
+	if r == nil || req == nil || len(req.Params) == 0 {
+		return nil
+	}
+	redacted, _, err := r.RedactJSON(req.Params)
+	if err != nil {
+		return err
+	}
+	req.Params = redacted
+	return nil
+}
+
+// redactMCPResponse redacts resp.Result and resp.Error in place.
+func redactMCPResponse(resp *mcp.Response) error {
+	r := globalRedactor.Load()
+	if r == nil || resp == nil {
+		return nil
+	}
+	if len(resp.Result) > 0 {
+		redacted, _, err := r.RedactJSON(resp.Result)
+		if err != nil {
+			return err
+		}
+		resp.Result = redacted
+	}
+	if resp.Error != nil {
+		resp.Error.Message = bouncer.RedactWithPatterns(resp.Error.Message, r.Patterns())
+		if len(resp.Error.Data) > 0 {
+			redacted, _, err := r.RedactJSON(resp.Error.Data)
+			if err != nil {
+				return err
+			}
+			resp.Error.Data = redacted
+		}
+	}
+	return nil
 }
 
 func writeStdioResponse(writer *bufio.Writer, resp *mcp.Response) {

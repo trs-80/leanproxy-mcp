@@ -300,7 +300,7 @@ func (h *Handler) initializeServer(ctx context.Context, serverName string) error
 }
 
 func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response, error) {
-	h.logger.Debug("handleToolsCall called", "params", string(req.Params))
+	h.logger.Debug("handleToolsCall called", "params_len", len(req.Params))
 
 	var params ToolsCallParams
 	if req.Params != nil {
