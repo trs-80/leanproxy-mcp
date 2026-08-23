@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,9 @@ type Config struct {
 	Action         string       `yaml:"action"`
 	CustomPatterns []PatternDef `yaml:"custom_patterns"`
 	Policies       []Rule       `yaml:"policies,omitempty"`
+	// QuarantineTTL is how long quarantined payloads are retained on disk
+	// (Go duration, e.g. "168h"). Defaults to 7 days; "0" disables the sweep.
+	QuarantineTTL string `yaml:"quarantine_ttl,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -87,6 +91,20 @@ func (c *Config) BuildClassifier() (*Classifier, error) {
 }
 
 func (c *Config) BuildDispatcher() *Dispatcher {
+	d := c.buildDispatcherRules()
+	if c.QuarantineTTL != "" {
+		ttl, err := time.ParseDuration(c.QuarantineTTL)
+		if err != nil {
+			slog.Warn("injection: invalid quarantine_ttl, using default",
+				"value", c.QuarantineTTL, "default", DefaultQuarantineTTL, "error", err)
+		} else {
+			d.SetQuarantineTTL(ttl)
+		}
+	}
+	return d
+}
+
+func (c *Config) buildDispatcherRules() *Dispatcher {
 	if c.Policies != nil {
 		return NewDispatcher(c.Policies)
 	}

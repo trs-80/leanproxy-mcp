@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -362,5 +363,22 @@ policies:
 	result := d.Dispatch(Result{RiskScore: 90, Payload: "test"})
 	if result.Action != ActionBlock {
 		t.Errorf("expected block from policies, got %s", result.Action)
+	}
+}
+
+func TestConfig_BuildDispatcher_QuarantineTTL(t *testing.T) {
+	cfg := DefaultConfig()
+	if d := cfg.BuildDispatcher(); d.QuarantineTTL() != DefaultQuarantineTTL {
+		t.Errorf("expected default TTL %v, got %v", DefaultQuarantineTTL, d.QuarantineTTL())
+	}
+
+	cfg.QuarantineTTL = "48h"
+	if d := cfg.BuildDispatcher(); d.QuarantineTTL() != 48*time.Hour {
+		t.Errorf("expected 48h TTL, got %v", d.QuarantineTTL())
+	}
+
+	cfg.QuarantineTTL = "not-a-duration"
+	if d := cfg.BuildDispatcher(); d.QuarantineTTL() != DefaultQuarantineTTL {
+		t.Errorf("expected default TTL on invalid value, got %v", d.QuarantineTTL())
 	}
 }

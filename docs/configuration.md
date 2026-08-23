@@ -486,6 +486,7 @@ injection:
 | `action` | string | `block` | Fallback action (`block`, `quarantine`, `log`, `redact`) |
 | `custom_patterns` | array | `[]` | User-defined injection patterns |
 | `policies` | array | (see default) | Ordered risk-range rules (overrides `action`) |
+| `quarantine_ttl` | duration | `168h` | Retention period for quarantined payloads; expired files are removed on the next quarantine (`0` disables) |
 
 ### Default Policy Rules
 
@@ -510,12 +511,14 @@ injection:
 |---------|--------|-------------|
 | `ignore-previous-instructions` | 90 | Override system instructions |
 | `new-instruction-override` | 85 | Redefine assistant role |
+| `role-reassignment` | 40 | "you are now a/an <role>" (escalates with other signals) |
 | `system-prompt-extraction` | 80 | Extract system prompt |
 | `dan-jailbreak` | 75 | DAN-style jailbreaks |
+| `no-restrictions` | 35 | "no rules/restrictions/limits" (escalates with other signals) |
 | `role-impersonation` | 70 | Boundary removal |
 | `repeat-everything` | 70 | Conversation dump attempts |
 | `token-smuggling` | 65 | Encoded payloads |
-| `forget-everything` | 75 | Context reset |
+| `forget-everything` | 40 | Context reset |
 | `inject-command` | 80 | Explicit injection markers |
 | `separator-injection` | 85 | Delimiter-based injection |
 | `important-override` | 30 | Urgency-based |
