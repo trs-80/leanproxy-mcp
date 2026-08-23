@@ -74,8 +74,10 @@ func TestRedactMultipleSecrets(t *testing.T) {
 }
 
 func TestRedactNoSecrets(t *testing.T) {
+	// A payload with nothing to redact is returned verbatim (no decode /
+	// re-encode round trip), so formatting is preserved.
 	input := `{"message": "hello world"}`
-	expected := `{"message":"hello world"}`
+	expected := input
 
 	redactor := NewRedactor(PatternsToRegexps(BuiltInPatterns))
 	result, _, err := redactor.RedactJSON([]byte(input))

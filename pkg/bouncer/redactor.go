@@ -2,6 +2,7 @@ package bouncer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,7 @@ type RedactionMeta struct {
 
 type Redactor struct {
 	patterns     []*regexp.Regexp
+	prefilter    *prefilter // nil means "always scan every pattern"
 	alertManager *AlertManager
 	bufferSize   int
 	maxOverlap   int
@@ -40,6 +42,7 @@ type Redactor struct {
 func NewRedactor(patterns []*regexp.Regexp) *Redactor {
 	return &Redactor{
 		patterns:   patterns,
+		prefilter:  buildPrefilter(patterns),
 		bufferSize: 4096,
 		maxOverlap: defaultMaxOverlap,
 	}
@@ -48,6 +51,7 @@ func NewRedactor(patterns []*regexp.Regexp) *Redactor {
 func NewRedactorWithAlerts(patterns []*regexp.Regexp, alertManager *AlertManager) *Redactor {
 	return &Redactor{
 		patterns:     patterns,
+		prefilter:    buildPrefilter(patterns),
 		alertManager: alertManager,
 		bufferSize:   4096,
 		maxOverlap:   defaultMaxOverlap,
@@ -61,8 +65,12 @@ type span struct{ start, end int }
 // pattern. Overlapping or adjacent matches from different patterns are
 // coalesced so each byte of input is redacted at most once.
 func (r *Redactor) findSpans(data []byte) []span {
+	lowered := bytes.ToLower(data)
 	var spans []span
-	for _, pattern := range r.patterns {
+	for i, pattern := range r.patterns {
+		if !r.prefilter.possible(i, lowered) {
+			continue
+		}
 		for _, loc := range pattern.FindAllIndex(data, -1) {
 			if loc[1] > loc[0] {
 				spans = append(spans, span{loc[0], loc[1]})
@@ -222,6 +230,10 @@ func (r *Redactor) redactChunk(chunk []byte) []byte {
 func (r *Redactor) RedactJSON(data []byte) ([]byte, int, error) {
 	slog.Debug("redacting message", "size", len(data))
 
+	if r.canSkipJSON(data) {
+		return data, 0, nil
+	}
+
 	var raw interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		slog.Warn("invalid JSON input, falling back to byte-level redaction", "error", err)
@@ -245,6 +257,28 @@ func (r *Redactor) RedactJSON(data []byte) ([]byte, int, error) {
 	return redacted, count, nil
 }
 
+// canSkipJSON reports whether data provably contains nothing to redact, so
+// the decode/walk/encode round trip can be skipped and the input returned
+// verbatim. The prefilter runs over the raw bytes, which is only exact when
+// every decoded string is byte-identical to a substring of the raw document:
+// that rules out any backslash escape (\uXXXX, \/, ...) and any invisible
+// character that stripInvisible would remove. Key-aware redaction is covered
+// by running sensitiveKeyPattern over the raw bytes as well.
+func (r *Redactor) canSkipJSON(data []byte) bool {
+	if r.prefilter == nil || bytes.IndexByte(data, '\\') >= 0 {
+		return false
+	}
+	if hasInvisible(string(data)) {
+		return false
+	}
+	lowered := bytes.ToLower(data)
+	return !r.prefilter.anyPossible(lowered) && !sensitiveKeyTriggers.anyPossible(lowered)
+}
+
+// sensitiveKeyTriggers prefilters sensitiveKeyPattern the same way pattern
+// scans are prefiltered.
+var sensitiveKeyTriggers = &prefilter{pats: []triggerSets{extractTriggers(sensitiveKeyPattern.String())}}
+
 // sensitiveKeyPattern matches JSON object keys whose string values are
 // redacted wholesale, regardless of whether the value looks like a known
 // secret format (SLR-09 key-aware redaction).
@@ -255,13 +289,11 @@ func (r *Redactor) redactInterface(val interface{}) (interface{}, int) {
 	case string:
 		return r.redactString(v)
 	case map[string]interface{}:
+		// Mutate in place; only keys that are themselves redacted need to be
+		// re-inserted, and those are deferred until the range is complete.
 		totalCount := 0
-		out := make(map[string]interface{}, len(v))
+		var renamed map[string]interface{}
 		for k, val := range v {
-			// Keys can carry secrets too (NEW-A-4).
-			newKey, keyCount := r.redactString(k)
-			totalCount += keyCount
-
 			var newVal interface{}
 			var count int
 			if s, ok := val.(string); ok && s != "" && sensitiveKeyPattern.MatchString(k) {
@@ -269,10 +301,25 @@ func (r *Redactor) redactInterface(val interface{}) (interface{}, int) {
 			} else {
 				newVal, count = r.redactInterface(val)
 			}
-			out[newKey] = newVal
 			totalCount += count
+
+			// Keys can carry secrets too (NEW-A-4).
+			newKey, keyCount := r.redactString(k)
+			totalCount += keyCount
+			if keyCount == 0 {
+				v[k] = newVal
+				continue
+			}
+			if renamed == nil {
+				renamed = make(map[string]interface{})
+			}
+			renamed[newKey] = newVal
+			delete(v, k)
 		}
-		return out, totalCount
+		for k, val := range renamed {
+			v[k] = val
+		}
+		return v, totalCount
 	case []interface{}:
 		totalCount := 0
 		for i, val := range v {
@@ -289,17 +336,44 @@ func (r *Redactor) redactInterface(val interface{}) (interface{}, int) {
 // stripInvisible removes zero-width and bidirectional control characters that
 // can be inserted inside a secret to split it so that no pattern matches.
 func stripInvisible(s string) string {
+	if !hasInvisible(s) {
+		return s
+	}
 	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 0x200B && r <= 0x200D, // ZWSP, ZWNJ, ZWJ
-			r == 0x2060,                // word joiner
-			r == 0xFEFF,                // BOM / ZWNBSP
-			r >= 0x202A && r <= 0x202E, // bidi embedding/override
-			r >= 0x2066 && r <= 0x2069: // bidi isolates
+		if isInvisible(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+func isInvisible(r rune) bool {
+	switch {
+	case r >= 0x200B && r <= 0x200D, // ZWSP, ZWNJ, ZWJ
+		r == 0x2060,                // word joiner
+		r == 0xFEFF,                // BOM / ZWNBSP
+		r >= 0x202A && r <= 0x202E, // bidi embedding/override
+		r >= 0x2066 && r <= 0x2069: // bidi isolates
+		return true
+	}
+	return false
+}
+
+// hasInvisible is a cheap pre-check: every rune stripInvisible removes is
+// >= U+200B, so a pure-ASCII string (the common case) is rejected by a byte
+// scan without decoding runes.
+func hasInvisible(s string) bool {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return false
+	}
+	return strings.ContainsFunc(s, isInvisible)
 }
 
 func (r *Redactor) redactString(data string) (string, int) {
@@ -307,8 +381,12 @@ func (r *Redactor) redactString(data string) (string, int) {
 	// matches, return the original so benign content (e.g. ZWJ emoji
 	// sequences) is passed through byte-for-byte.
 	result := stripInvisible(data)
+	lowered := strings.ToLower(result)
 	totalCount := 0
-	for _, pattern := range r.patterns {
+	for i, pattern := range r.patterns {
+		if !r.prefilter.possibleString(i, lowered) {
+			continue
+		}
 		matches := pattern.FindAllString(result, -1)
 		if len(matches) > 0 {
 			totalCount += len(matches)

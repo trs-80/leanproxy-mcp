@@ -326,9 +326,17 @@ func MatchSecret(input string) []string {
 	return matched
 }
 
+// builtInPrefilter holds required-literal triggers for BuiltInPatterns, used
+// to skip replace scans for input that cannot match a given pattern.
+var builtInPrefilter = buildPrefilter(PatternsToRegexps(BuiltInPatterns))
+
 func RedactSecrets(input string) string {
+	lowered := strings.ToLower(input)
 	result := input
-	for _, pattern := range BuiltInPatterns {
+	for i, pattern := range BuiltInPatterns {
+		if !builtInPrefilter.possibleString(i, lowered) {
+			continue
+		}
 		result = pattern.Pattern.ReplaceAllString(result, SecretRedacted)
 	}
 	return result
