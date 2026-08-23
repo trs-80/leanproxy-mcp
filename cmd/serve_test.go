@@ -5,11 +5,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -690,4 +696,206 @@ func TestHandleSingleRequest_SidecarDisabled_NoCall(t *testing.T) {
 	writer.Flush()
 
 	_ = readBuf.String()
+}
+
+// blockingPool blocks every SendRequest until release is closed and tracks the
+// peak number of concurrent in-flight calls.
+type blockingPool struct {
+	release  chan struct{}
+	inflight atomic.Int32
+	peak     atomic.Int32
+}
+
+func (b *blockingPool) SendRequest(ctx context.Context, serverName string, req *proxy.JSONRPCRequest, timeout time.Duration) (*proxy.JSONRPCResponse, error) {
+	n := b.inflight.Add(1)
+	for {
+		p := b.peak.Load()
+		if n <= p || b.peak.CompareAndSwap(p, n) {
+			break
+		}
+	}
+	defer b.inflight.Add(-1)
+	<-b.release
+	return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`{}`), ID: req.ID}, nil
+}
+
+func TestHandleConnection_OversizedLineRejectedAndConnectionClosed(t *testing.T) {
+	old := maxLineBytes
+	maxLineBytes = 1024
+	t.Cleanup(func() { maxLineBytes = old })
+
+	mockR := &mockRouter{}
+	mockGT := &mockGatewayTools{
+		listServersFunc: func(ctx context.Context) ([]gateway.ServerInfo, error) {
+			return []gateway.ServerInfo{{Name: "server1", Status: "healthy"}}, nil
+		},
+	}
+	mockP := &mockPool{}
+
+	// A syntactically valid request that exceeds the line cap, followed by a
+	// small valid request that must never be processed because the connection
+	// is closed after the oversized line.
+	pad := strings.Repeat("x", 2048)
+	big := `{"jsonrpc":"2.0","method":"list_servers","id":1,"params":{"pad":"` + pad + `"}}` + "\n"
+	small := `{"jsonrpc":"2.0","method":"list_servers","id":2}` + "\n"
+	readBuf := &bytes.Buffer{}
+
+	handleConnection(&mockReadWriter{reader: bytes.NewReader([]byte(big + small)), writer: readBuf}, mockR, mockGT, mockP)
+
+	lines := strings.Split(strings.TrimSpace(readBuf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one response (connection closed after oversized line), got %d: %q", len(lines), readBuf.String())
+	}
+	var resp proxy.JSONRPCResponse
+	if err := json.Unmarshal([]byte(lines[0]), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != errors.ErrCodeParseError {
+		t.Fatalf("expected parse error for oversized line, got %+v", resp)
+	}
+}
+
+func TestHandleConnection_IdleTimeoutClosesConnection(t *testing.T) {
+	old := connIdleTimeout
+	connIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { connIdleTimeout = old })
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		handleConnection(server, &mockRouter{}, &mockGatewayTools{}, &mockPool{})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConnection did not return after idle timeout")
+	}
+}
+
+func TestHandleConnection_InflightCapEnforced(t *testing.T) {
+	old := maxInflightPerConn
+	maxInflightPerConn = 2
+	t.Cleanup(func() { maxInflightPerConn = old })
+
+	mockR := &mockRouter{routeFunc: func(ctx context.Context, method string) (*registry.ServerEntry, error) {
+		return &registry.ServerEntry{ID: "s1"}, nil
+	}}
+	bp := &blockingPool{release: make(chan struct{})}
+
+	var input strings.Builder
+	for i := 0; i < 6; i++ {
+		fmt.Fprintf(&input, `{"jsonrpc":"2.0","method":"tools/call","id":%d}`+"\n", i)
+	}
+	readBuf := &bytes.Buffer{}
+	writeMu := &sync.Mutex{}
+	rw := &lockedReadWriter{reader: strings.NewReader(input.String()), writer: readBuf, mu: writeMu}
+
+	done := make(chan struct{})
+	go func() {
+		handleConnection(rw, mockR, &mockGatewayTools{}, bp)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for bp.inflight.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	// Give the reader a chance to (wrongly) spawn more goroutines.
+	time.Sleep(50 * time.Millisecond)
+	if got := bp.peak.Load(); got != 2 {
+		t.Fatalf("expected at most 2 in-flight requests, observed peak %d", got)
+	}
+
+	close(bp.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConnection did not finish after releasing pool")
+	}
+	writeMu.Lock()
+	n := len(strings.Split(strings.TrimSpace(readBuf.String()), "\n"))
+	writeMu.Unlock()
+	if n != 6 {
+		t.Fatalf("expected 6 responses, got %d", n)
+	}
+}
+
+type lockedReadWriter struct {
+	reader io.Reader
+	writer *bytes.Buffer
+	mu     *sync.Mutex
+}
+
+func (l *lockedReadWriter) Read(p []byte) (int, error) { return l.reader.Read(p) }
+func (l *lockedReadWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.writer.Write(p)
+}
+
+type tempNetError struct{}
+
+func (tempNetError) Error() string   { return "accept: too many open files" }
+func (tempNetError) Timeout() bool   { return false }
+func (tempNetError) Temporary() bool { return true }
+
+func TestAcceptBackoff(t *testing.T) {
+	// Transient errors double from 5ms up to a 1s ceiling.
+	d, stop := acceptBackoff(tempNetError{}, 0)
+	if stop || d != 5*time.Millisecond {
+		t.Fatalf("first transient error: got (%v, %v), want (5ms, false)", d, stop)
+	}
+	d, stop = acceptBackoff(tempNetError{}, d)
+	if stop || d != 10*time.Millisecond {
+		t.Fatalf("second transient error: got (%v, %v), want (10ms, false)", d, stop)
+	}
+	d, _ = acceptBackoff(tempNetError{}, 800*time.Millisecond)
+	if d != time.Second {
+		t.Fatalf("backoff should cap at 1s, got %v", d)
+	}
+	d, _ = acceptBackoff(tempNetError{}, time.Second)
+	if d != time.Second {
+		t.Fatalf("backoff should stay at 1s, got %v", d)
+	}
+
+	// EMFILE surfaces as a *net.OpError wrapping a syscall error; also backs off.
+	emfile := &net.OpError{Op: "accept", Net: "tcp", Err: os.NewSyscallError("accept", syscall.EMFILE)}
+	d, stop = acceptBackoff(emfile, 0)
+	if stop || d != 5*time.Millisecond {
+		t.Fatalf("EMFILE: got (%v, %v), want (5ms, false)", d, stop)
+	}
+
+	// A closed listener stops the loop.
+	if _, stop = acceptBackoff(net.ErrClosed, 0); !stop {
+		t.Fatal("net.ErrClosed should stop the accept loop")
+	}
+	if _, stop = acceptBackoff(&net.OpError{Op: "accept", Err: net.ErrClosed}, 0); !stop {
+		t.Fatal("wrapped net.ErrClosed should stop the accept loop")
+	}
+}
+
+func TestIsNonLoopbackListen(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", false},
+		{"localhost:8080", false},
+		{"[::1]:8080", false},
+		{"127.0.0.2:8080", false},
+		{"0.0.0.0:8080", true},
+		{":8080", true},
+		{"[::]:8080", true},
+		{"192.168.1.10:8080", true},
+		{"example.com:8080", true},
+	}
+	for _, tt := range tests {
+		if got := isNonLoopbackListen(tt.addr); got != tt.want {
+			t.Errorf("isNonLoopbackListen(%q) = %v, want %v", tt.addr, got, tt.want)
+		}
+	}
 }

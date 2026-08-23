@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	errstd "errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -68,6 +69,22 @@ var serveFlags struct {
 	dashboardToken     string
 }
 
+// Listener hardening limits. Package-level (not in serveFlags) so tests can
+// lower them without going through cobra.
+const (
+	defaultMaxLineBytes       = 4 << 20 // 4 MiB
+	defaultConnIdleTimeout    = 5 * time.Minute
+	defaultMaxInflightPerConn = 64
+	defaultMaxConnections     = 256
+)
+
+var (
+	maxLineBytes       = defaultMaxLineBytes
+	connIdleTimeout    = defaultConnIdleTimeout
+	maxInflightPerConn = defaultMaxInflightPerConn
+	maxConnections     = defaultMaxConnections
+)
+
 var metricsServer *http.Server
 var dashboardServer *http.Server
 
@@ -129,6 +146,10 @@ func init() {
 	serveCmd.Flags().StringVar(&serveFlags.sidecarURL, "sidecar-url", "http://localhost:11434", "Sidecar server URL")
 	serveCmd.Flags().StringVar(&serveFlags.dashboardBind, "dashboard-bind", "127.0.0.1:9090", "Dashboard endpoint bind address (e.g. 127.0.0.1:9090). Set to 'off' or empty to disable.")
 	serveCmd.Flags().StringVar(&serveFlags.dashboardToken, "dashboard-token", "", "Bearer token for dashboard access from non-loopback addresses")
+	serveCmd.Flags().IntVar(&maxLineBytes, "max-line-bytes", defaultMaxLineBytes, "Maximum size in bytes of a single JSON-RPC line; longer lines get a parse error and the connection is closed")
+	serveCmd.Flags().DurationVar(&connIdleTimeout, "conn-idle-timeout", defaultConnIdleTimeout, "Close a client connection that sends no data for this long (0 = no timeout)")
+	serveCmd.Flags().IntVar(&maxInflightPerConn, "max-inflight-per-conn", defaultMaxInflightPerConn, "Maximum concurrent in-flight requests per client connection")
+	serveCmd.Flags().IntVar(&maxConnections, "max-connections", defaultMaxConnections, "Maximum concurrent client connections")
 	RootCmd.AddCommand(serveCmd)
 }
 
@@ -366,6 +387,10 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	slog.Info("starting server", "listen", serveFlags.listenAddr, "upstream", serveFlags.upstreamURL)
 
+	if isNonLoopbackListen(serveFlags.listenAddr) {
+		slog.Warn("INSECURE: MCP listener is bound to a non-loopback address and has no authentication; anyone who can reach this port can invoke every upstream tool. Use --listen 127.0.0.1:<port> or put an authenticating proxy in front.", "listen", serveFlags.listenAddr)
+	}
+
 	ln, err := net.Listen("tcp", serveFlags.listenAddr)
 	if err != nil {
 		logError("failed to listen: %v", err)
@@ -481,15 +506,70 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	slog.Info("server ready", "address", ln.Addr().String())
 
+	connSem := make(chan struct{}, maxConnections)
+	var backoff time.Duration
 	for {
+		connSem <- struct{}{} // blocks when maxConnections are active; kernel backlog queues the rest
 		conn, err := ln.Accept()
 		if err != nil {
-			slog.Warn("accept error", "error", err)
+			<-connSem
+			var stop bool
+			backoff, stop = acceptBackoff(err, backoff)
+			if stop {
+				// The listener was closed by the shutdown handler above, which
+				// finishes closing the pools and then calls os.Exit. Park here
+				// instead of returning so runServe does not unwind first.
+				slog.Info("listener closed, waiting for shutdown to complete")
+				select {}
+			}
+			slog.Warn("accept error", "error", err, "retry_in", backoff)
+			time.Sleep(backoff)
 			continue
 		}
+		backoff = 0
 		slog.Debug("connection accepted", "remote", conn.RemoteAddr())
-		go handleConnection(conn, r, gatewayTools, unifiedPool)
+		go func() {
+			defer func() { <-connSem }()
+			handleConnection(conn, r, gatewayTools, unifiedPool)
+		}()
 	}
+}
+
+// acceptBackoff returns the delay to sleep before the next Accept after err,
+// doubling from 5ms up to 1s (the same schedule net/http uses), and stop=true
+// when the listener has been closed and the loop should end.
+func acceptBackoff(err error, cur time.Duration) (time.Duration, bool) {
+	if errstd.Is(err, net.ErrClosed) {
+		return 0, true
+	}
+	if cur == 0 {
+		return 5 * time.Millisecond, false
+	}
+	next := cur * 2
+	if next > time.Second {
+		next = time.Second
+	}
+	return next, false
+}
+
+// isNonLoopbackListen reports whether addr would accept connections from
+// other hosts (any address that is not a loopback IP or "localhost").
+func isNonLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		return true // ":8080" binds all interfaces
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true // hostname we cannot resolve without network; assume exposed
+	}
+	return !ip.IsLoopback()
 }
 
 func handleConnection(conn io.ReadWriter, r Router, gt gateway.GatewayTools, p Pool) {
@@ -502,37 +582,65 @@ func handleConnection(conn io.ReadWriter, r Router, gt gateway.GatewayTools, p P
 	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel()
 
-	reader := bufio.NewReader(conn)
+	netConn, _ := conn.(net.Conn)
+
+	scanner := bufio.NewScanner(conn)
+	// Scanner's effective cap is max(cap(initial), maxLineBytes), so keep the
+	// initial buffer no larger than the limit.
+	initial := 64 << 10
+	if initial > maxLineBytes {
+		initial = maxLineBytes
+	}
+	scanner.Buffer(make([]byte, initial), maxLineBytes)
 	writer := bufio.NewWriter(conn)
 	writerMu := &sync.Mutex{}
 
+	// Bounds the number of request goroutines per connection; the read loop
+	// blocks (backpressure on the client) when the cap is reached.
+	sem := make(chan struct{}, maxInflightPerConn)
 	var wg sync.WaitGroup
 
 	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
+		if netConn != nil && connIdleTimeout > 0 {
+			if err := netConn.SetReadDeadline(time.Now().Add(connIdleTimeout)); err != nil {
+				slog.Warn("failed to set read deadline", "error", err)
 			}
-			slog.Warn("read error", "error", err)
+		}
+
+		if !scanner.Scan() {
+			err := scanner.Err()
+			switch {
+			case err == nil:
+				// EOF
+			case errstd.Is(err, bufio.ErrTooLong):
+				slog.Warn("closing connection: line exceeds max-line-bytes", "limit", maxLineBytes)
+				writeErrorAsync(writer, writerMu, errors.ErrCodeParseError, "Parse error: request line exceeds maximum size")
+			case errstd.Is(err, os.ErrDeadlineExceeded):
+				slog.Info("closing idle connection", "idle_timeout", connIdleTimeout)
+			default:
+				slog.Warn("read error", "error", err)
+			}
 			break
 		}
 
+		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 
-		line = trimNewline(line)
+		// Scanner reuses its buffer; copy before handing off to a goroutine.
+		line = trimNewline(append([]byte(nil), line...))
 
+		sem <- struct{}{}
 		wg.Add(1)
 		if isBatchRequest(line) {
 			go func(l []byte) {
-				defer wg.Done()
+				defer func() { <-sem; wg.Done() }()
 				handleBatchRequestAsync(connCtx, l, writer, writerMu, r, gt, p)
 			}(line)
 		} else {
 			go func(l []byte) {
-				defer wg.Done()
+				defer func() { <-sem; wg.Done() }()
 				handleSingleRequestAsync(connCtx, l, writer, writerMu, r, gt, p)
 			}(line)
 		}
