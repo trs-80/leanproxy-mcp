@@ -250,8 +250,17 @@ func TestNewRedactor(t *testing.T) {
 	}
 }
 
+// largePayloadSize shrinks multi-megabyte stream tests under -race, where
+// regex throughput is ~20x lower; the boundary logic is exercised either way.
+func largePayloadSize(n int) int {
+	if raceDetectorEnabled {
+		return n / 10
+	}
+	return n
+}
+
 func TestLargePayloadStreaming(t *testing.T) {
-	largeData := make([]byte, 10*1024*1024)
+	largeData := make([]byte, largePayloadSize(10*1024*1024))
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
 	}
@@ -296,7 +305,7 @@ func TestStreamingNoDataLeak(t *testing.T) {
 }
 
 func TestStreamingRedactorLargePayload(t *testing.T) {
-	largeData := make([]byte, 5*1024*1024)
+	largeData := make([]byte, largePayloadSize(5*1024*1024))
 	for i := range largeData {
 		largeData[i] = byte('A' + (i % 26))
 	}
