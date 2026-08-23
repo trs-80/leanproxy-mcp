@@ -62,10 +62,17 @@ var DefaultPatternDefs = []PatternDef{
 	},
 	{
 		Name:        "new-instruction-override",
-		Pattern:     `(?i)(here\s+are\s+(your\s+)?new\s+(instructions|prompt)|you\s+(are\s+)?now\s+|you\s+will\s+(now\s+)?act\s+as|your\s+(new\s+)?(role|mission|task)\s+(is|will\s+be))`,
+		Pattern:     `(?i)(here\s+are\s+(your\s+)?new\s+(instructions|prompt)|you\s+will\s+(now\s+)?act\s+as|your\s+(new\s+)?(role|mission|task)\s+(is|will\s+be))`,
 		Weight:      85,
 		Enabled:     true,
 		Description: "Attempts to redefine the assistant role",
+	},
+	{
+		Name:        "role-reassignment",
+		Pattern:     `(?i)you\s+are\s+now\s+((an?|the|my)\s+(\w+\s+){0,2}(ai|assistant|bot|model|agent|dan|hacker|persona|character|expert|administrator|developer|system|chatbot|chatgpt|gpt|llm)\b|in\s+\w+\s+mode\b|(operating|running|working|acting)\s+without\b)`,
+		Weight:      40,
+		Enabled:     true,
+		Description: "Attempts to assign the assistant a new identity (\"you are now a/an <role>\")",
 	},
 	{
 		Name:        "system-prompt-extraction",
@@ -76,10 +83,17 @@ var DefaultPatternDefs = []PatternDef{
 	},
 	{
 		Name:        "dan-jailbreak",
-		Pattern:     `(?i)(dan\s*(\d+(\.\d+)?)?|do\s+anything\s+now|jail\s*(break|free)|unfiltered\s+mode|no\s+(rules|restrictions|limits|boundaries|filter))`,
+		Pattern:     `(?i)(dan\s*(\d+(\.\d+)?)?|do\s+anything\s+now|jail\s*(break|free)|unfiltered\s+mode)`,
 		Weight:      75,
 		Enabled:     true,
 		Description: "Jailbreak and DAN-style attacks",
+	},
+	{
+		Name:        "no-restrictions",
+		Pattern:     `(?i)no\s+(rules|restrictions|limits|boundaries|filter)`,
+		Weight:      35,
+		Enabled:     true,
+		Description: "Boundary removal phrasing (escalates in combination with other signals)",
 	},
 	{
 		Name:        "role-impersonation",
@@ -105,13 +119,13 @@ var DefaultPatternDefs = []PatternDef{
 	{
 		Name:        "forget-everything",
 		Pattern:     `(?i)(forget|erase|clear|reset|remove)\s+(everything(\s+you\s+(know|have))?|(all\s+)?(your\s+)?(memory|training|knowledge|context|instructions)|this\s+(conversation|session|chat))`,
-		Weight:      75,
+		Weight:      40,
 		Enabled:     true,
 		Description: "Attempts to reset model context",
 	},
 	{
 		Name:        "inject-command",
-		Pattern:     `(?i)(new\s+(prompt|command|instruction)|prompt\s+(injection|override|hack)|injected|malicious\s+(prompt|input))`,
+		Pattern:     `(?i)(new\s+(prompt|command|instruction)|prompt\s+(injection|override|hack)|injected\s+(command|prompt|instructions?)|malicious\s+(prompt|input))`,
 		Weight:      80,
 		Enabled:     true,
 		Description: "Explicit prompt injection markers",

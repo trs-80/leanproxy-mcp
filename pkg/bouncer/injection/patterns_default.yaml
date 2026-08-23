@@ -1,6 +1,9 @@
 # Default prompt-injection detection patterns for LeanProxy-MCP
 # These patterns use regex + weighted heuristics to compute a risk score (0-100).
-# Weights are calibrated so a single high-risk match pushes the score above 70.
+# Weights are calibrated so a single high-risk match pushes the score above 70,
+# while phrases that also occur in ordinary English ("you are now ...",
+# "forget everything ...", "no rules") stay below the quarantine threshold (50)
+# on their own and only escalate when combined with other signals.
 custom_patterns:
   - name: ignore-previous-instructions
     pattern: "(?i)(ignore|disregard|forget|override)\\s+(all\\s+)?(previous|prior|above)\\s+(instructions|commands|directions|prompts)"
@@ -9,10 +12,16 @@ custom_patterns:
     description: "Attempts to override system instructions"
 
   - name: new-instruction-override
-    pattern: "(?i)(here\\s+are\\s+(your\\s+)?new\\s+(instructions|prompt)|you\\s+(are\\s+)?now\\s+|you\\s+will\\s+(now\\s+)?act\\s+as|your\\s+(new\\s+)?(role|mission|task)\\s+(is|will\\s+be))"
+    pattern: "(?i)(here\\s+are\\s+(your\\s+)?new\\s+(instructions|prompt)|you\\s+will\\s+(now\\s+)?act\\s+as|your\\s+(new\\s+)?(role|mission|task)\\s+(is|will\\s+be))"
     weight: 85
     enabled: true
     description: "Attempts to redefine the assistant role"
+
+  - name: role-reassignment
+    pattern: "(?i)you\\s+are\\s+now\\s+((an?|the|my)\\s+(\\w+\\s+){0,2}(ai|assistant|bot|model|agent|dan|hacker|persona|character|expert|administrator|developer|system|chatbot|chatgpt|gpt|llm)\\b|in\\s+\\w+\\s+mode\\b|(operating|running|working|acting)\\s+without\\b)"
+    weight: 40
+    enabled: true
+    description: "Attempts to assign the assistant a new identity (\"you are now a/an <role>\")"
 
   - name: system-prompt-extraction
     pattern: "(?i)(output|print|display|show|reveal|leak|dump)\\s+((your|all)\\s+)?(system\\s+)?(prompt|instructions|commands|directives|initial\\s+prompt)"
@@ -21,10 +30,16 @@ custom_patterns:
     description: "Attempts to extract the system prompt"
 
   - name: dan-jailbreak
-    pattern: "(?i)(dan\\s*(\\d+(\\.\\d+)?)?|do\\s+anything\\s+now|jail\\s*(break|free)|unfiltered\\s+mode|no\\s+(rules|restrictions|limits|boundaries|filter))"
+    pattern: "(?i)(dan\\s*(\\d+(\\.\\d+)?)?|do\\s+anything\\s+now|jail\\s*(break|free)|unfiltered\\s+mode)"
     weight: 75
     enabled: true
     description: "Jailbreak and DAN-style attacks"
+
+  - name: no-restrictions
+    pattern: "(?i)no\\s+(rules|restrictions|limits|boundaries|filter)"
+    weight: 35
+    enabled: true
+    description: "Boundary removal phrasing (escalates in combination with other signals)"
 
   - name: role-impersonation
     pattern: "(?i)act\\s+as\\s+(if\\s+you\\s+are|though\\s+you\\s+are|an?\\s+(ai\\s+)?(without|with(out)?\\s+(no\\s+)?)?(restrictions|limits|filter|rules|boundaries|ethics|safety|guidelines))"
@@ -46,12 +61,12 @@ custom_patterns:
 
   - name: forget-everything
     pattern: "(?i)(forget|erase|clear|reset|remove)\\s+(everything(\\s+you\\s+(know|have))?|(all\\s+)?(your\\s+)?(memory|training|knowledge|context|instructions)|this\\s+(conversation|session|chat))"
-    weight: 75
+    weight: 40
     enabled: true
     description: "Attempts to reset model context"
 
   - name: inject-command
-    pattern: "(?i)(new\\s+(prompt|command|instruction)|prompt\\s+(injection|override|hack)|injected|malicious\\s+(prompt|input))"
+    pattern: "(?i)(new\\s+(prompt|command|instruction)|prompt\\s+(injection|override|hack)|injected\\s+(command|prompt|instructions?)|malicious\\s+(prompt|input))"
     weight: 80
     enabled: true
     description: "Explicit prompt injection markers"

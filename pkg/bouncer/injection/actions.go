@@ -6,9 +6,16 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
 )
+
+// DefaultQuarantineTTL is the default retention period for quarantined payloads.
+const DefaultQuarantineTTL = 7 * 24 * time.Hour
 
 type Action string
 
@@ -37,6 +44,8 @@ type ActionResult struct {
 type Dispatcher struct {
 	rules         []Rule
 	quarantineDir string
+	quarantineTTL time.Duration
+	sweepOnce     sync.Once
 }
 
 func DefaultRules() []Rule {
@@ -55,6 +64,7 @@ func NewDispatcher(rules []Rule) *Dispatcher {
 	return &Dispatcher{
 		rules:         rules,
 		quarantineDir: qDir,
+		quarantineTTL: DefaultQuarantineTTL,
 	}
 }
 
@@ -65,16 +75,59 @@ func NewDispatcherWithQuarantineDir(rules []Rule, quarantineDir string) *Dispatc
 	return &Dispatcher{
 		rules:         rules,
 		quarantineDir: quarantineDir,
+		quarantineTTL: DefaultQuarantineTTL,
 	}
 }
 
+// defaultQuarantineDir returns the quarantine directory under the user's home.
+// If the home directory cannot be determined it returns "" so that quarantine
+// fails closed instead of persisting payloads to a shared temp directory.
 func defaultQuarantineDir() string {
 	home, err := os.UserHomeDir()
-	if err != nil {
-		slog.Warn("injection: cannot determine home dir, using temp", "error", err)
-		return os.TempDir()
+	if err != nil || home == "" {
+		slog.Warn("injection: cannot determine home dir; quarantine disabled, payloads will be blocked", "error", err)
+		return ""
 	}
 	return filepath.Join(home, ".leanproxy", "quarantine")
+}
+
+// SetQuarantineTTL sets the retention period for quarantined files. A value
+// <= 0 disables the retention sweep.
+func (d *Dispatcher) SetQuarantineTTL(ttl time.Duration) {
+	d.quarantineTTL = ttl
+}
+
+func (d *Dispatcher) QuarantineTTL() time.Duration {
+	return d.quarantineTTL
+}
+
+// sweepQuarantine deletes quarantine files older than the configured TTL.
+// It runs once per dispatcher, on the first quarantine.
+func (d *Dispatcher) sweepQuarantine() {
+	if d.quarantineTTL <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(d.quarantineDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-d.quarantineTTL)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(d.quarantineDir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	if removed > 0 {
+		slog.Info("injection: removed expired quarantine files", "count", removed, "ttl", d.quarantineTTL)
+	}
 }
 
 func (d *Dispatcher) Rules() []Rule {
@@ -127,10 +180,15 @@ func (d *Dispatcher) block(result Result) ActionResult {
 func (d *Dispatcher) quarantine(result Result) ActionResult {
 	id := uuid.New().String()
 	qDir := d.quarantineDir
+	if qDir == "" {
+		slog.Error("injection: quarantine dir unknown, blocking payload instead")
+		return d.block(result)
+	}
 	if err := os.MkdirAll(qDir, 0700); err != nil {
 		slog.Error("injection: cannot create quarantine dir", "path", qDir, "error", err)
 		return d.block(result)
 	}
+	d.sweepOnce.Do(d.sweepQuarantine)
 
 	qPath := filepath.Join(qDir, id+".json")
 	qEntry := struct {
@@ -141,7 +199,7 @@ func (d *Dispatcher) quarantine(result Result) ActionResult {
 	}{
 		ID:        id,
 		RiskScore: result.RiskScore,
-		Payload:   result.Payload,
+		Payload:   bouncer.RedactSecrets(result.Payload),
 		Matches:   result.Matches,
 	}
 
@@ -164,7 +222,7 @@ func (d *Dispatcher) quarantine(result Result) ActionResult {
 
 	return ActionResult{
 		Action:        ActionQuarantine,
-		Message:       fmt.Sprintf("[CONTENT_QUARANTINED - review at %s]", qPath),
+		Message:       fmt.Sprintf("[CONTENT_QUARANTINED - id %s]", id),
 		RiskScore:     result.RiskScore,
 		QuarantineID:  id,
 		QuarantineDir: qDir,
@@ -172,7 +230,8 @@ func (d *Dispatcher) quarantine(result Result) ActionResult {
 }
 
 func (d *Dispatcher) redact(result Result) ActionResult {
-	redacted := "[CONTENT_REDACTED]"
+	// TransformedPayload replaces req.Params, so it must be a valid JSON value.
+	redacted := `"[CONTENT_REDACTED]"`
 	slog.Warn("injection: redacting payload",
 		"risk_score", result.RiskScore,
 		"matches", len(result.Matches),

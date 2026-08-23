@@ -91,7 +91,11 @@ injection:
 
 ### Quarantine
 
-Quarantined payloads are saved to `~/.leanproxy/quarantine/<uuid>.json`:
+Quarantined payloads are saved to `~/.leanproxy/quarantine/<uuid>.json` (directory mode `0700`).
+Secrets in the payload are redacted with `[SECRET_REDACTED]` before the file is written,
+the client only receives the quarantine ID (never the filesystem path), and files older
+than `quarantine_ttl` (default 7 days) are removed on the next quarantine. If the home
+directory cannot be determined, quarantine fails closed and the request is blocked.
 
 ```json
 {
@@ -117,12 +121,14 @@ leanproxy-mcp doctor security
 |---------|--------|-------------|
 | `ignore-previous-instructions` | 90 | Override system instructions |
 | `new-instruction-override` | 85 | Redefine assistant role |
+| `role-reassignment` | 40 | "you are now a/an <role>" (escalates with other signals) |
 | `system-prompt-extraction` | 80 | Extract system prompt |
 | `dan-jailbreak` | 75 | DAN-style jailbreaks |
+| `no-restrictions` | 35 | "no rules/restrictions/limits" (escalates with other signals) |
 | `role-impersonation` | 70 | Boundary removal |
 | `repeat-everything` | 70 | Conversation dump attempts |
 | `token-smuggling` | 65 | Encoded payloads |
-| `forget-everything` | 75 | Context reset |
+| `forget-everything` | 40 | Context reset |
 | `inject-command` | 80 | Explicit injection markers |
 | `separator-injection` | 85 | Delimiter-based injection |
 | `important-override` | 30 | Urgency-based |
