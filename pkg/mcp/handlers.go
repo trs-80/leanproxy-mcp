@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,9 @@ type Handler struct {
 	cacheFailures   atomic.Uint64
 	lazyLoading     bool
 	lazySchemaCache *registry.LazySchemaCache
+	// defaultMaxResponseChars, when >0, caps every invoke_tool result that does
+	// not carry an explicit max_response_chars argument.
+	defaultMaxResponseChars int
 }
 
 type AggregatedManifest struct {
@@ -223,7 +227,7 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 			for _, tool := range tools {
 				stub := registry.ToolStub{
 					Name:        serverName + "_" + tool.Name,
-					Description: tool.Description,
+					Description: truncateDescription(tool.Description, stubDescChars),
 				}
 				h.lazySchemaCache.SetFullSchema(stub.Name, registry.ToolSchema{
 					Name:        tool.Name,
@@ -381,6 +385,8 @@ func (h *Handler) handleLeanproxyTool(ctx context.Context, req *Request, params 
 		return h.handleListTools(ctx, req, params)
 	case "invoke_tool":
 		return h.handleInvokeTool(ctx, req, params)
+	case "search_tools":
+		return h.handleSearchTools(ctx, req, params)
 	default:
 		return &Response{
 			JSONRPC: JSONRPCVersion,
@@ -409,7 +415,7 @@ func (h *Handler) handleListTools(ctx context.Context, req *Request, params Tool
 	if serverName == "" {
 		return &Response{
 			JSONRPC: JSONRPCVersion,
-			Error:   NewError(ErrCodeInvalidParams, "server_name parameter is required. Use list_servers to get available server names, then use list_tools to see tools on a specific server."),
+			Error:   NewError(ErrCodeInvalidParams, "server_name parameter is required. Tip: search_tools finds tools across all servers in one call."),
 			ID:      req.ID,
 		}, nil
 	}
@@ -441,7 +447,7 @@ func (h *Handler) handleListTools(ctx context.Context, req *Request, params Tool
 		serversList := strings.Join(servers, ", ")
 		result := map[string]interface{}{
 			"content": []map[string]string{
-				{"type": "text", "text": fmt.Sprintf("Server '%s' not found. Available servers: %s. Use list_servers to see all available servers.", serverName, serversList)},
+				{"type": "text", "text": fmt.Sprintf("Server '%s' not found. Available servers: %s.", serverName, serversList)},
 			},
 		}
 		resultBytes, _ := json.Marshal(result)
@@ -679,6 +685,106 @@ func (h *Handler) refreshToolCacheFromServers(ctx context.Context) {
 	}
 }
 
+// handleSearchTools answers the search_tools gateway tool: a single-call,
+// cross-server keyword search that returns invocation-ready signatures so the
+// client can call invoke_tool without any further discovery round trips.
+func (h *Handler) handleSearchTools(ctx context.Context, req *Request, params ToolsCallParams) (*Response, error) {
+	var query, serverFilter string
+	limit := 25
+	maxDescChars := 120
+	if params.Arguments != nil {
+		var args map[string]interface{}
+		if err := json.Unmarshal(params.Arguments, &args); err == nil {
+			if q, ok := args["query"].(string); ok {
+				query = q
+			}
+			if sv, ok := args["server"].(string); ok {
+				serverFilter = sv
+			}
+			if l, ok := args["limit"].(float64); ok && l > 0 {
+				limit = int(l)
+			}
+			if m, ok := args["max_description_chars"].(float64); ok && m > 0 {
+				maxDescChars = int(m)
+			}
+		}
+	}
+
+	h.toolCache.mu.RLock()
+	empty := len(h.toolCache.tools) == 0
+	h.toolCache.mu.RUnlock()
+	if empty {
+		h.PopulateToolCache(ctx)
+	}
+
+	matches := h.searchToolCacheFiltered(query, serverFilter, maxDescChars)
+	total := len(matches)
+	truncated := false
+	if total > limit {
+		matches = matches[:limit]
+		truncated = true
+	}
+
+	var text string
+	switch {
+	case total == 0 && serverFilter != "":
+		text = fmt.Sprintf("No tools matching %q on server %q. Try a broader query or drop the server filter.", query, serverFilter)
+	case total == 0:
+		text = fmt.Sprintf("No tools matching %q. Try fewer or more general keywords.", query)
+	default:
+		header := fmt.Sprintf("%d tools ([required] {optional}); call invoke_tool with server, tool, arguments:\n", total)
+		text = header + strings.Join(matches, "\n")
+		if truncated {
+			text += fmt.Sprintf("\n... %d more; narrow the query or raise limit.", total-limit)
+		}
+	}
+
+	result := map[string]interface{}{
+		"content": []map[string]string{{"type": "text", "text": text}},
+	}
+	resultBytes, _ := json.Marshal(result)
+	return &Response{
+		JSONRPC: JSONRPCVersion,
+		Result:  resultBytes,
+		ID:      req.ID,
+	}, nil
+}
+
+// searchToolCacheFiltered is searchToolCache with an optional server filter.
+// Sorted by server then tool name for deterministic output.
+func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescChars int) []string {
+	h.toolCache.mu.RLock()
+	defer h.toolCache.mu.RUnlock()
+
+	var results []string
+	queryWords := strings.Fields(strings.ToLower(query))
+
+	serverNames := make([]string, 0, len(h.toolCache.tools))
+	for serverName := range h.toolCache.tools {
+		if serverFilter != "" && serverName != serverFilter {
+			continue
+		}
+		serverNames = append(serverNames, serverName)
+	}
+	sort.Strings(serverNames)
+
+	for _, serverName := range serverNames {
+		tools := h.toolCache.tools[serverName]
+		sorted := make([]Tool, len(tools))
+		copy(sorted, tools)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+		for _, tool := range sorted {
+			matchedLine := strings.ToLower(serverName + "_" + tool.Name + ": " + tool.Description)
+			if len(queryWords) == 0 || matchesQuery(matchedLine, queryWords) {
+				required, optional := parseInputSchema(tool.InputSchema)
+				results = append(results, formatToolSearchResult(serverName, tool.Name, tool.Description, required, optional, maxDescChars))
+			}
+		}
+	}
+
+	return results
+}
+
 func (h *Handler) searchToolCache(query string, maxDescChars int) []string {
 	h.toolCache.mu.RLock()
 	defer h.toolCache.mu.RUnlock()
@@ -714,6 +820,7 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	var serverName, toolName string
 	var arguments json.RawMessage
 	var err error
+	maxResponseChars := h.defaultMaxResponseChars
 
 	if params.Arguments != nil {
 		var args map[string]interface{}
@@ -731,13 +838,19 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 					h.logger.Warn("failed to marshal arguments", "error", err)
 				}
 			}
+			if m, ok := args["max_response_chars"].(float64); ok && m > 0 {
+				maxResponseChars = int(m)
+				if maxResponseChars < minResponseChars {
+					maxResponseChars = minResponseChars
+				}
+			}
 		}
 	}
 
 	if serverName == "" || toolName == "" {
 		return &Response{
 			JSONRPC: JSONRPCVersion,
-			Error:   NewError(ErrCodeInvalidParams, "server and tool are required. Use list_servers to get server names, then list_tools to discover available tools."),
+			Error:   NewError(ErrCodeInvalidParams, "server and tool are required. Tip: search_tools returns server, tool, and parameters in one call."),
 			ID:      req.ID,
 		}, nil
 	}
@@ -820,6 +933,11 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 		h.logger.Error("invoke_tool failed", "server", serverName, "tool", toolName, "error", err)
 		schema := h.lookupToolSchema(serverName, toolName)
 		enrichedError := FormatErrorWithHint(fmt.Sprintf("tool invocation failed: %v", err), serverName, toolName)
+		if schema == nil {
+			if suggestions := h.suggestTools(serverName, toolName, 3); suggestions != "" {
+				enrichedError += suggestions
+			}
+		}
 		errResp := NewError(ErrCodeServerError, enrichedError)
 		if schema != nil {
 			dataBytes, _ := json.Marshal(map[string]interface{}{
@@ -835,9 +953,14 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 		}, nil
 	}
 
+	result := resp.Result
+	if maxResponseChars > 0 {
+		result = truncateToolResult(result, maxResponseChars)
+	}
+
 	return &Response{
 		JSONRPC: JSONRPCVersion,
-		Result:  resp.Result,
+		Result:  result,
 		ID:      req.ID,
 	}, nil
 }
@@ -1065,6 +1188,17 @@ func parseInputSchema(schema json.RawMessage) (required, optional []ParamInfo) {
 			optional = append(optional, param)
 		}
 	}
+
+	// Deterministic order: identical schemas must always render identically —
+	// unstable output defeats provider prompt caching across sessions and makes
+	// results harder to diff. Required params follow the schema's "required"
+	// array (author-intended order); optional params sort alphabetically.
+	requiredRank := make(map[string]int, len(requiredNames))
+	for i, name := range requiredNames {
+		requiredRank[name] = i
+	}
+	sort.Slice(required, func(i, j int) bool { return requiredRank[required[i].Name] < requiredRank[required[j].Name] })
+	sort.Slice(optional, func(i, j int) bool { return optional[i].Name < optional[j].Name })
 	return required, optional
 }
 
@@ -1148,3 +1282,172 @@ func toolsToCachedTools(tools []Tool) []toolstore.CachedTool {
 	}
 	return result
 }
+
+// minResponseChars is the smallest cap accepted for max_response_chars; below
+// this a truncated result is unlikely to be usable and the marker overhead
+// dominates.
+const minResponseChars = 200
+
+// SetDefaultMaxResponseChars sets a server-side default cap applied to every
+// invoke_tool result that does not carry an explicit max_response_chars.
+// Zero (the default) means unlimited.
+func (h *Handler) SetDefaultMaxResponseChars(n int) {
+	if n > 0 && n < minResponseChars {
+		n = minResponseChars
+	}
+	h.defaultMaxResponseChars = n
+}
+
+// truncateToolResult enforces a total character budget across the text blocks
+// of an MCP tools/call result. Non-text blocks and unparseable results pass
+// through untouched (never corrupt what we do not understand). A marker noting
+// the cut is appended so the model knows the output is partial and how to get
+// the rest.
+func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
+	var result struct {
+		Content []map[string]interface{} `json:"content"`
+		IsError *bool                    `json:"isError,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil || len(result.Content) == 0 {
+		return raw
+	}
+
+	total := 0
+	for _, block := range result.Content {
+		if text, ok := block["text"].(string); ok {
+			total += len(text)
+		}
+	}
+	if total <= maxChars {
+		return raw
+	}
+
+	budget := maxChars
+	kept := make([]map[string]interface{}, 0, len(result.Content))
+	for _, block := range result.Content {
+		text, ok := block["text"].(string)
+		if !ok {
+			kept = append(kept, block)
+			continue
+		}
+		if budget <= 0 {
+			break
+		}
+		if len(text) > budget {
+			nb := make(map[string]interface{}, len(block))
+			for k, v := range block {
+				nb[k] = v
+			}
+			nb["text"] = text[:budget]
+			kept = append(kept, nb)
+			budget = 0
+			break
+		}
+		budget -= len(text)
+		kept = append(kept, block)
+	}
+
+	marker := fmt.Sprintf("\n[leanproxy: truncated, %d of %d chars shown; raise or omit max_response_chars for more]", maxChars, total)
+	kept = append(kept, map[string]interface{}{"type": "text", "text": marker})
+
+	out := map[string]interface{}{"content": kept}
+	if result.IsError != nil {
+		out["isError"] = *result.IsError
+	}
+	trimmed, err := json.Marshal(out)
+	if err != nil {
+		return raw
+	}
+	return trimmed
+}
+
+// suggestTools returns a "did you mean" block for an unknown tool: up to max
+// close matches on the same server (fallback: any server), formatted with
+// parameter signatures so the model can retry immediately without a discovery
+// round trip.
+func (h *Handler) suggestTools(serverName, toolName string, max int) string {
+	needle := strings.ToLower(toolName)
+
+	h.toolCache.mu.RLock()
+	defer h.toolCache.mu.RUnlock()
+
+	type cand struct {
+		server string
+		tool   Tool
+		score  int
+	}
+	var cands []cand
+	consider := func(server string, tools []Tool, bonus int) {
+		for _, t := range tools {
+			name := strings.ToLower(t.Name)
+			score := 0
+			switch {
+			case name == needle:
+				score = 100
+			case strings.Contains(name, needle) || strings.Contains(needle, name):
+				score = 60
+			default:
+				common := 0
+				for i := 0; i < len(name) && i < len(needle) && name[i] == needle[i]; i++ {
+					common++
+				}
+				if common >= 4 {
+					score = common
+				}
+				for _, word := range strings.FieldsFunc(needle, func(r rune) bool { return r == '_' || r == '-' }) {
+					if len(word) >= 4 && strings.Contains(name, word) {
+						score += 20
+					}
+				}
+			}
+			if score > 0 {
+				cands = append(cands, cand{server, t, score + bonus})
+			}
+		}
+	}
+
+	if tools, ok := h.toolCache.tools[serverName]; ok {
+		consider(serverName, tools, 10)
+	}
+	if len(cands) == 0 {
+		for server, tools := range h.toolCache.tools {
+			if server == serverName {
+				continue
+			}
+			consider(server, tools, 0)
+		}
+	}
+	if len(cands) == 0 {
+		return ""
+	}
+
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		if cands[i].server != cands[j].server {
+			return cands[i].server < cands[j].server
+		}
+		return cands[i].tool.Name < cands[j].tool.Name
+	})
+	if len(cands) > max {
+		cands = cands[:max]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\nClose matches ([required] {optional}):\n")
+	for i, c := range cands {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		required, optional := parseInputSchema(c.tool.InputSchema)
+		sb.WriteString(formatToolSearchResult(c.server, c.tool.Name, c.tool.Description, required, optional, 80))
+	}
+	return sb.String()
+}
+
+// stubDescChars caps per-tool description length in lazy-loading tools/list
+// stubs. Stubs exist for name discovery; the full description travels with
+// get_tool_schema, so every char here is paid in every conversation for
+// marginal value.
+const stubDescChars = 120

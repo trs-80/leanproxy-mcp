@@ -41,10 +41,10 @@ func (m *MCPServerInstance) SetStdioPool(p *pool.StdioPool) {
 func (m *MCPServerInstance) SetupGatewayTools() {
 	listToolsTool := mcp.NewTool(
 		"list_tools",
-		mcp.WithDescription("List all tools available on a specific MCP server. Always call list_servers first to get server names, then use this tool to see available tools on a specific server."),
+		mcp.WithDescription("List every tool on one MCP server. Prefer search_tools for keyword discovery in a single call."),
 		mcp.WithString("server_name",
 			mcp.Required(),
-			mcp.Description("MCP server name (e.g., 'garmin', 'github', 'filesystem'). Use list_servers to get available server names."),
+			mcp.Description("MCP server name, e.g. 'github'"),
 		),
 		mcp.WithNumber("max_description_chars",
 			mcp.Description("Max description length (default 200, min 50, max 500)"),
@@ -53,10 +53,10 @@ func (m *MCPServerInstance) SetupGatewayTools() {
 
 	invokeTool := mcp.NewTool(
 		"invoke_tool",
-		mcp.WithDescription("Invoke a tool on a configured MCP server. First use list_servers to get server names, then use list_tools to find available tools on that server."),
+		mcp.WithDescription("Invoke a tool on a configured MCP server. Call directly when you know the server and tool; errors include schemas and close matches."),
 		mcp.WithString("server",
 			mcp.Required(),
-			mcp.Description("Server name from list_servers (e.g., 'garmin', 'github')"),
+			mcp.Description("MCP server name, e.g. 'github'"),
 		),
 		mcp.WithString("tool",
 			mcp.Required(),

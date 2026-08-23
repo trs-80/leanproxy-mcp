@@ -17,7 +17,7 @@ var ListToolsParamMeta = map[string]ParameterMeta{
 	"server_name": {
 		Required:        true,
 		Default:         nil,
-		Description:     "MCP server name (from list_servers). Required - identifies which server's tools to list.",
+		Description:     "MCP server name whose tools to list",
 		SuggestedValues: []string{"github", "garmin", "filesystem", "intervals"},
 	},
 	"max_description_chars": {
@@ -34,15 +34,15 @@ var InvokeToolParamDefaults = map[string]interface{}{}
 var InvokeToolParamMeta = map[string]ParameterMeta{
 	"server": {
 		Required:    true,
-		Description: "Server name from list_servers (e.g., 'github', 'garmin', 'filesystem'). Must be a configured and running MCP server.",
+		Description: "MCP server name, e.g. 'github'",
 	},
 	"tool": {
 		Required:    true,
-		Description: "Tool name from list_tools (e.g., 'list_issues', 'get_activities'). Do NOT prefix with server name.",
+		Description: "Tool name without server prefix, e.g. 'list_issues'",
 	},
 	"arguments": {
 		Required:    false,
-		Description: "Tool arguments as key-value pairs. Refer to list_tools output for available parameters. Pass empty object {} if no arguments needed.",
+		Description: "Tool arguments as key-value pairs",
 	},
 }
 

@@ -121,12 +121,12 @@ var ErrorHintRegistry = map[string][]ErrorHint{
 	"invalid params": {
 		{
 			Original:   "invalid params",
-			Suggestion: "Check the parameter names and types. Use list_servers to get servers, then list_tools to see available parameters.",
+			Suggestion: "Check the parameter names and types against the signature in the error data or search_tools output.",
 			Action:     "check_params",
 		},
 		{
 			Original:   "missing",
-			Suggestion: "A required parameter is missing. Use list_servers to get servers, then list_tools to see required parameters.",
+			Suggestion: "A required parameter is missing; required parameters are listed in the error data schema or via search_tools.",
 			Action:     "check_params",
 		},
 	},
@@ -140,7 +140,7 @@ var ErrorHintRegistry = map[string][]ErrorHint{
 	"tool not found": {
 		{
 			Original:   "tool not found",
-			Suggestion: "The tool doesn't exist on this server. Use list_servers to get servers, then list_tools to discover available tools.",
+			Suggestion: "The tool doesn't exist on this server. Use the close matches listed below, or search_tools to find the right tool in one call.",
 			Action:     "list_tools",
 		},
 	},

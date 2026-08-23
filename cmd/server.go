@@ -309,11 +309,12 @@ Example:
 }
 
 var runFlags struct {
-	stdio    bool
-	config   string
-	logFile  string
-	logLevel string
-	verbose  bool
+	stdio            bool
+	config           string
+	logFile          string
+	logLevel         string
+	verbose          bool
+	maxResponseChars int
 }
 
 func init() {
@@ -322,6 +323,7 @@ func init() {
 	runCmd.Flags().StringVar(&runFlags.logFile, "log-file", "", "Path to log file")
 	runCmd.Flags().StringVar(&runFlags.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	runCmd.Flags().BoolVarP(&runFlags.verbose, "verbose", "v", false, "Enable verbose logging")
+	runCmd.Flags().IntVar(&runFlags.maxResponseChars, "max-response-chars", 0, "Default cap on invoke_tool result size in characters (0 = unlimited; per-call max_response_chars overrides)")
 	serverCmd.AddCommand(runCmd)
 
 	var healthCmd = &cobra.Command{
@@ -469,6 +471,9 @@ func runServerRun(cmd *cobra.Command, args []string) error {
 	}
 
 	handler := mcp.NewHandlerWithToolStore(unifiedPool, slog.Default(), cache)
+	if runFlags.maxResponseChars > 0 {
+		handler.SetDefaultMaxResponseChars(runFlags.maxResponseChars)
+	}
 	for _, srv := range cfg.Servers {
 		if srv.TimeoutValue > 0 {
 			handler.SetTimeout(srv.Name, srv.TimeoutValue)

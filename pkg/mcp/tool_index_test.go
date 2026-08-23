@@ -39,8 +39,11 @@ func TestGetToolDefinition(t *testing.T) {
 
 func TestGetAllToolDefinitions(t *testing.T) {
 	tools := GetAllToolDefinitions()
-	if len(tools) != 2 {
-		t.Errorf("GetAllToolDefinitions() = %d tools, want 2", len(tools))
+	if len(tools) != 3 {
+		t.Errorf("GetAllToolDefinitions() = %d tools, want 3 (list_tools, invoke_tool, search_tools)", len(tools))
+	}
+	if GetToolDefinition("search_tools") == nil {
+		t.Error("search_tools definition missing")
 	}
 }
 

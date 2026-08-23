@@ -32,7 +32,7 @@ type FieldDescription struct {
 var LeanproxyTools = []ToolDefinition{
 	{
 		Name:        "list_tools",
-		Description: "List all tools available on a specific MCP server. **IMPORTANT:** Always call list_servers first to get available server names, then use this tool to see tools on a specific server.",
+		Description: "List every tool on one MCP server with parameter signatures. Prefer search_tools to find a tool by keyword in a single call; use list_tools only to browse one server exhaustively.",
 		Categories:  []string{"discovery", "meta"},
 		Examples: []ToolExample{
 			{
@@ -67,7 +67,7 @@ var LeanproxyTools = []ToolDefinition{
 			"properties": {
 				"server_name": {
 					"type": "string",
-					"description": "MCP server name (from list_servers). Required - identifies which server's tools to list."
+					"description": "MCP server name whose tools to list"
 				},
 				"max_description_chars": {
 					"type": "number",
@@ -80,7 +80,7 @@ var LeanproxyTools = []ToolDefinition{
 	},
 	{
 		Name:        "invoke_tool",
-		Description: "Invoke a tool on a configured MCP server. **Required:** First use list_servers to get server names, then use list_tools to discover available tools on that server.",
+		Description: "Invoke a tool on a configured MCP server. Call this directly when you already know the server and tool (from search_tools, list_tools, or earlier in the conversation) - no discovery calls are required first. Errors include the tool schema and close-match suggestions, so a failed guess is cheap.",
 		Categories:  []string{"execution", "meta"},
 		Examples: []ToolExample{
 			{
@@ -122,19 +122,68 @@ var LeanproxyTools = []ToolDefinition{
 			"properties": {
 				"server": {
 					"type": "string",
-					"description": "Server name from list_servers (e.g., 'github', 'garmin', 'filesystem'). Must be a configured MCP server."
+					"description": "MCP server name, e.g. 'github'"
 				},
 				"tool": {
 					"type": "string",
-					"description": "Tool name from list_tools (e.g., 'list_issues', 'get_activities'). Do NOT prefix with server name."
+					"description": "Tool name without server prefix, e.g. 'list_issues'"
 				},
 				"arguments": {
 					"type": "object",
-					"description": "Tool arguments as key-value pairs. Refer to list_tools output for available parameters."
+					"description": "Tool arguments as key-value pairs"
+				},
+				"max_response_chars": {
+					"type": "number",
+					"description": "Truncate the tool result to this many characters (min 200). Use for large outputs you only need the start of."
 				}
 			},
 			"required": ["server", "tool"],
 			"additionalProperties": false
+		}`),
+	},
+	{
+		Name:        "search_tools",
+		Description: "START HERE for discovery: keyword-search tools across ALL MCP servers in one call. Returns matching tools as 'server_tool: description [required: type, ...] {optional: type, ...}' - enough to call invoke_tool immediately, no list_servers/list_tools round trips needed.",
+		Categories:  []string{"discovery", "meta"},
+		Examples: []ToolExample{
+			{
+				Input:       map[string]interface{}{"query": "create issue"},
+				Description: "Find tools for creating issues on any server",
+			},
+			{
+				Input:       map[string]interface{}{"query": "activity", "server": "garmin", "limit": 5},
+				Description: "Find up to 5 activity-related tools on the garmin server",
+			},
+		},
+		Returns: ReturnSchema{
+			Type:        "object",
+			Description: "Content block listing matching tools with parameter signatures",
+			Fields: []FieldDescription{
+				{Name: "content", Type: "array", Desc: "Array of text content blocks"},
+			},
+		},
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string",
+					"description": "Keywords matched against tool names and descriptions (all words must match). Empty lists everything."
+				},
+				"server": {
+					"type": "string",
+					"description": "Restrict results to one server"
+				},
+				"limit": {
+					"type": "number",
+					"description": "Maximum results (default 25)",
+					"default": 25
+				},
+				"max_description_chars": {
+					"type": "number",
+					"description": "Truncate descriptions (default 120)",
+					"default": 120
+				}
+			}
 		}`),
 	},
 }
