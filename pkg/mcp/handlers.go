@@ -331,7 +331,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 		}, nil
 	}
 
-	if params.Name == "list_tools" || params.Name == "invoke_tool" {
+	if params.Name == "list_tools" || params.Name == "invoke_tool" || params.Name == "search_tools" {
 		return h.handleLeanproxyTool(ctx, req, params)
 	}
 
@@ -365,16 +365,25 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 
 	resp, err := h.pool.SendRequestToServer(ctx, serverName, MethodToolsCall, paramsBytes, h.timeoutFor(serverName))
 	if err != nil {
+		msg := fmt.Sprintf("tool call failed: %v", err)
+		if suggestions := h.suggestTools(serverName, toolName, 3); suggestions != "" {
+			msg += suggestions
+		}
 		return &Response{
 			JSONRPC: JSONRPCVersion,
-			Error:   NewError(ErrCodeServerError, fmt.Sprintf("tool call failed: %v", err)),
+			Error:   NewError(ErrCodeServerError, msg),
 			ID:      req.ID,
 		}, nil
 	}
 
+	result := resp.Result
+	if h.defaultMaxResponseChars > 0 {
+		result = truncateToolResult(result, h.defaultMaxResponseChars)
+	}
+
 	return &Response{
 		JSONRPC: JSONRPCVersion,
-		Result:  resp.Result,
+		Result:  result,
 		ID:      req.ID,
 	}, nil
 }
@@ -750,14 +759,25 @@ func (h *Handler) handleSearchTools(ctx context.Context, req *Request, params To
 	}, nil
 }
 
-// searchToolCacheFiltered is searchToolCache with an optional server filter.
-// Sorted by server then tool name for deterministic output.
+// searchToolCacheFiltered ranks tools against the query with scored-OR
+// matching: any query word may hit (name hits outrank description hits, all
+// words matching outranks partial), so "trace path callers" still surfaces
+// trace_path even though "callers" appears nowhere. All-words AND matching was
+// measured to strand real sessions: the model searched 2-3 times, got nothing,
+// and fell back to a full list_tools — costing more than no search at all.
+// Output is deterministic: score desc, then server/tool name.
 func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescChars int) []string {
 	h.toolCache.mu.RLock()
 	defer h.toolCache.mu.RUnlock()
 
-	var results []string
 	queryWords := strings.Fields(strings.ToLower(query))
+
+	type scored struct {
+		server string
+		tool   Tool
+		score  int
+	}
+	var matches []scored
 
 	serverNames := make([]string, 0, len(h.toolCache.tools))
 	for serverName := range h.toolCache.tools {
@@ -774,14 +794,54 @@ func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescCha
 		copy(sorted, tools)
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 		for _, tool := range sorted {
-			matchedLine := strings.ToLower(serverName + "_" + tool.Name + ": " + tool.Description)
-			if len(queryWords) == 0 || matchesQuery(matchedLine, queryWords) {
-				required, optional := parseInputSchema(tool.InputSchema)
-				results = append(results, formatToolSearchResult(serverName, tool.Name, tool.Description, required, optional, maxDescChars))
+			if len(queryWords) == 0 {
+				matches = append(matches, scored{serverName, tool, 0})
+				continue
 			}
+			name := strings.ToLower(serverName + "_" + tool.Name)
+			desc := strings.ToLower(tool.Description)
+			score, hits := 0, 0
+			for _, word := range queryWords {
+				switch {
+				case strings.Contains(name, word):
+					score += 10
+					hits++
+				case strings.Contains(desc, word):
+					score += 3
+					hits++
+				}
+			}
+			if hits == 0 {
+				continue
+			}
+			if hits == len(queryWords) {
+				score += fullCoverageBonus
+			}
+			matches = append(matches, scored{serverName, tool, score})
 		}
 	}
 
+	sort.SliceStable(matches, func(i, j int) bool { return matches[i].score > matches[j].score })
+
+	// Precision guard: when enough tools match every query word, weaker
+	// partial matches are noise that inflates the payload (the whole point of
+	// search over list_tools). Partial matches serve only as a fallback so a
+	// near-miss query still returns something actionable instead of nothing.
+	full := 0
+	for _, m := range matches {
+		if m.score >= fullCoverageBonus {
+			full++
+		}
+	}
+	if full >= minFullMatchesForPrecision {
+		matches = matches[:full]
+	}
+
+	results := make([]string, 0, len(matches))
+	for _, m := range matches {
+		required, optional := parseInputSchema(m.tool.InputSchema)
+		results = append(results, formatToolSearchResult(m.server, m.tool.Name, m.tool.Description, required, optional, maxDescChars))
+	}
 	return results
 }
 
@@ -1451,3 +1511,12 @@ func (h *Handler) suggestTools(serverName, toolName string, max int) string {
 // get_tool_schema, so every char here is paid in every conversation for
 // marginal value.
 const stubDescChars = 120
+
+// fullCoverageBonus is added when every query word matches, guaranteeing
+// full-coverage matches sort above any partial match (max per-word score is
+// 10, so partials cannot reach it without full coverage).
+const fullCoverageBonus = 1000
+
+// minFullMatchesForPrecision: with at least this many full-coverage matches,
+// partial matches are dropped from search results entirely.
+const minFullMatchesForPrecision = 1

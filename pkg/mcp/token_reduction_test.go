@@ -240,3 +240,62 @@ func TestToolsListStubs_DescriptionsCapped(t *testing.T) {
 	}
 	t.Fatal("github_verbose_tool stub not found in tools/list")
 }
+
+// TestToolsCall_RoutesSearchTools exercises search_tools through the real
+// tools/call entrypoint — the path MCP clients hit. Regression test for the
+// dispatch gap where search_tools fell through to parseToolName and was
+// forwarded to a nonexistent server named "search".
+func TestToolsCall_RoutesSearchTools(t *testing.T) {
+	h := NewHandler(newMockPool(), nil)
+	seedToolCache(h, "github", Tool{Name: "create_issue", Description: "Create issue", InputSchema: issueSchema()})
+
+	params, _ := json.Marshal(ToolsCallParams{Name: "search_tools", Arguments: json.RawMessage(`{"query":"issue"}`)})
+	resp, err := h.handleToolsCall(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1"), Params: params})
+	if err != nil {
+		t.Fatalf("handleToolsCall: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("search_tools via tools/call errored: %v", resp.Error)
+	}
+	if text := resultText(t, resp); !strings.Contains(text, "github_create_issue") {
+		t.Errorf("expected search results, got: %s", text)
+	}
+}
+
+// TestSearchTools_PartialMatchFallback pins the scored-OR recall behavior: a
+// query where no tool matches every word must still return the best partial
+// matches (the all-words-AND matcher returned nothing here, stranding real
+// sessions into a full list_tools fallback).
+func TestSearchTools_PartialMatchFallback(t *testing.T) {
+	h := NewHandler(newMockPool(), nil)
+	seedToolCache(h, "cbm",
+		Tool{Name: "trace_path", Description: "Trace call paths through the graph", InputSchema: json.RawMessage(`{}`)},
+		Tool{Name: "list_projects", Description: "List indexed projects", InputSchema: json.RawMessage(`{}`)},
+	)
+
+	text := resultText(t, callGatewayTool(t, h, "search_tools", map[string]interface{}{"query": "trace path callers"}))
+	if !strings.Contains(text, "cbm_trace_path") {
+		t.Errorf("partial match should surface trace_path, got:\n%s", text)
+	}
+	if strings.Contains(text, "list_projects") {
+		t.Errorf("zero-hit tool must not appear, got:\n%s", text)
+	}
+}
+
+// TestSearchTools_PrecisionDropsPartialsWhenFullExists: with a full-coverage
+// match available, single-word noise matches are excluded from the payload.
+func TestSearchTools_PrecisionDropsPartialsWhenFullExists(t *testing.T) {
+	h := NewHandler(newMockPool(), nil)
+	seedToolCache(h, "github",
+		Tool{Name: "create_issue", Description: "Create a new issue", InputSchema: json.RawMessage(`{}`)},
+		Tool{Name: "create_branch", Description: "Create a branch", InputSchema: json.RawMessage(`{}`)},
+	)
+
+	text := resultText(t, callGatewayTool(t, h, "search_tools", map[string]interface{}{"query": "create issue"}))
+	if !strings.Contains(text, "github_create_issue") {
+		t.Errorf("full match missing:\n%s", text)
+	}
+	if strings.Contains(text, "create_branch") {
+		t.Errorf("partial match should be dropped when full matches exist:\n%s", text)
+	}
+}
