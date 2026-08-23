@@ -188,14 +188,15 @@ func (p *StdioPool) StartServer(ctx context.Context, config *migrate.ServerConfi
 	}
 
 	serverConfig := StdioServerConfig{
-		Name:           config.Name,
-		Command:        config.Stdio.Command,
-		Args:           config.Stdio.Args,
-		Env:            config.Stdio.Env,
-		CWD:            config.Stdio.CWD,
-		MaxConcurrent:  p.maxPerServer,
-		IdleTimeout:    config.IdleTimeoutValue,
-		RequestTimeout: config.TimeoutValue,
+		Name:            config.Name,
+		Command:         config.Stdio.Command,
+		Args:            config.Stdio.Args,
+		Env:             config.Stdio.Env,
+		CWD:             config.Stdio.CWD,
+		MaxConcurrent:   p.maxPerServer,
+		IdleTimeout:     config.IdleTimeoutValue,
+		RequestTimeout:  config.TimeoutValue,
+		MaxResponseSize: config.Stdio.MaxResponseBytes,
 	}
 
 	server := newServerV2(config.Name, serverConfig, p.logger)

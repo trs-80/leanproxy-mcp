@@ -68,6 +68,7 @@ watch:
 | `server.port` | int | `8080` | Listen port |
 | `servers[].timeout` | duration | `30s` | **Per-server** request timeout. Each server entry in `servers:` can set its own `timeout` (e.g. `timeout: 60s` for `garmin`). The proxy honors the per-server value end-to-end: the handler dispatches with it and the worker uses `min(per-server, caller)`. Use a larger value for servers that return slow / large payloads (FIT data, big search results). |
 | `server.max_batch_size` | int | `100` | Maximum batch size for JSON-RPC batch requests (0 = unlimited) |
+| `servers[].stdio.max_response_bytes` | int | `1048576` (1 MiB) | **Per-server** cap on a single stdout line (one JSON-RPC message) from a stdio server. A line over the cap is treated like a crash: the in-flight request fails immediately and the server is restarted. Raise it for servers whose tools return very large results (big files, large query results). |
 
 ### Socket Options
 
@@ -649,6 +650,7 @@ servers:
     stdio:
       command: garmin-mcp
       args: [stdio]
+      # max_response_bytes: 1048576   # cap on one stdout line; default 1 MiB
     timeout: 30s
     connect_timeout: 10s
     # idle_timeout: 30m   # empty/absent defaults to 30m; "0" disables

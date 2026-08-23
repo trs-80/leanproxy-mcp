@@ -163,7 +163,7 @@ func newServerV2(name string, config StdioServerConfig, logger *slog.Logger) *St
 	}
 
 	maxResponseSize := config.MaxResponseSize
-	if maxResponseSize == 0 {
+	if maxResponseSize <= 0 {
 		maxResponseSize = 1024 * 1024 // 1MB default
 	}
 
@@ -591,15 +591,6 @@ func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
 			return
 		default:
 			if scanner.Scan() {
-				if scanner.Err() != nil {
-					if errstd.Is(scanner.Err(), bufio.ErrBufferFull) {
-						s.logger.Error("response exceeds max buffer size", "name", s.name, "maxSize", s.maxResponseSize)
-					} else {
-						s.logger.Error("scanner error", "name", s.name, "error", scanner.Err())
-					}
-					return
-				}
-
 				line := scanner.Bytes()
 				s.logger.Debug("read from server stdout", "name", s.name, "line", string(line))
 
@@ -627,9 +618,49 @@ func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
 					s.logger.Warn("response channel full, dropping response", "name", s.name)
 				}
 			} else {
+				s.handleReadFailure(scanner.Err(), stopCh)
 				return
 			}
 		}
+	}
+}
+
+// handleReadFailure runs when the stdout scanner stops. A nil error is EOF:
+// the child exited (or is being stopped) and waitForExit owns recovery. Any
+// other error — most commonly bufio.ErrTooLong when a single response line
+// exceeds maxResponseSize — means the reader is gone while the process is
+// still alive. Left alone, such a server would stay "healthy" and time out
+// every later request until the health checker noticed. Instead, kill the
+// child so waitForExit takes the normal crash path: in-flight requests fail
+// fast and scheduleRestart brings up a fresh process.
+func (s *StdioServerV2) handleReadFailure(err error, stopCh chan struct{}) {
+	if err == nil {
+		return
+	}
+	select {
+	case <-stopCh:
+		// Generation already being torn down; the pipe was closed under us.
+		return
+	default:
+	}
+
+	if errstd.Is(err, bufio.ErrTooLong) {
+		s.logger.Error("response line exceeds max response size; restarting server",
+			"name", s.name, "max_response_bytes", s.maxResponseSize)
+		err = fmt.Errorf("pool: response line exceeds max response size (%d bytes)", s.maxResponseSize)
+	} else {
+		s.logger.Error("stdout read failed; restarting server", "name", s.name, "error", err)
+	}
+
+	s.mu.Lock()
+	s.stats.LastError = err.Error()
+	s.stats.LastErrorAt = time.Now()
+	s.stats.ErrorCount++
+	proc := s.process
+	s.mu.Unlock()
+
+	if proc != nil && proc.Process != nil {
+		_ = proc.Process.Kill()
 	}
 }
 
@@ -813,7 +844,7 @@ func (s *StdioServerV2) processRequest(ctx context.Context, req Request, stopCh 
 	s.stats.RequestCount++
 	s.stats.AvgLatencyMs = (s.stats.AvgLatencyMs*float64(s.stats.RequestCount-1) + latency) / float64(s.stats.RequestCount)
 	currentState := atomic.LoadInt32(&s.state)
-	if currentState != stateStopping {
+	if currentState != stateStopping && currentState != stateError {
 		atomic.StoreInt32(&s.state, stateIdle)
 	}
 	s.mu.Unlock()
