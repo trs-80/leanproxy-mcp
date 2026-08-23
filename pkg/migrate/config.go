@@ -68,6 +68,9 @@ type StdioConfig struct {
 	Args    []string `yaml:"args"`
 	Env     []string `yaml:"env"`
 	CWD     string   `yaml:"cwd"`
+	// MaxResponseBytes caps the size of a single stdout line (one JSON-RPC
+	// message) read from the server. 0 means the built-in default (1 MiB).
+	MaxResponseBytes int `yaml:"max_response_bytes,omitempty"`
 }
 
 type HTTPConfig struct {
