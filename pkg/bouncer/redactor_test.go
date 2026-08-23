@@ -248,7 +248,8 @@ func TestLargePayloadStreaming(t *testing.T) {
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
 	}
-	copy(largeData[100:140], []byte("AKIAIOSFODNN7EXAMPLE"))
+	secret := " AKIAIOSFODNN7EXAMPLE "
+	copy(largeData[100:100+len(secret)], []byte(secret))
 
 	r := bytes.NewReader(largeData)
 	var w bytes.Buffer
@@ -292,7 +293,8 @@ func TestStreamingRedactorLargePayload(t *testing.T) {
 	for i := range largeData {
 		largeData[i] = byte('A' + (i % 26))
 	}
-	copy(largeData[1000:1040], []byte(`"token": "ghp_123456789012345678901234567890123456"`))
+	secret := `"token": "ghp_123456789012345678901234567890123456" `
+	copy(largeData[1000:1000+len(secret)], []byte(secret))
 
 	r := bytes.NewReader(largeData)
 	var w bytes.Buffer

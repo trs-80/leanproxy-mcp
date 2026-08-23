@@ -14,49 +14,49 @@ func TestBuiltInPatterns(t *testing.T) {
 	}{
 		{
 			name:      "AWS Access Key",
-			pattern:   &BuiltInPatterns[0],
+			pattern:   GetPatternByName("aws-access-key"),
 			input:     "AKIAIOSFODNN7EXAMPLE",
 			wantMatch: true,
 		},
 		{
 			name:      "AWS Access Key invalid",
-			pattern:   &BuiltInPatterns[0],
+			pattern:   GetPatternByName("aws-access-key"),
 			input:     "AKIA1234",
 			wantMatch: false,
 		},
 		{
 			name:      "GitHub Personal Token",
-			pattern:   &BuiltInPatterns[1],
+			pattern:   GetPatternByName("github-token"),
 			input:     "ghp_123456789012345678901234567890123456",
 			wantMatch: true,
 		},
 		{
 			name:      "GitHub Fine-grained PAT",
-			pattern:   &BuiltInPatterns[2],
+			pattern:   GetPatternByName("github-fine-grained-pat"),
 			input:     "github_pat_11AAAAAAAAAAAAAAA_BBBBBBBBBBBBBBBBBBB",
 			wantMatch: true,
 		},
 		{
 			name:      "Stripe Live Secret Key",
-			pattern:   &BuiltInPatterns[3],
+			pattern:   GetPatternByName("stripe-secret-key"),
 			input:     "sk_live_" + strings.Repeat("A", 24),
 			wantMatch: true,
 		},
 		{
 			name:      "Stripe Live Publishable Key",
-			pattern:   &BuiltInPatterns[4],
+			pattern:   GetPatternByName("stripe-publishable-key"),
 			input:     "pk_live_" + strings.Repeat("A", 24),
 			wantMatch: true,
 		},
 		{
 			name:      "Generic API Key case insensitive",
-			pattern:   &BuiltInPatterns[5],
+			pattern:   GetPatternByName("generic-api-key"),
 			input:     "api_key=abcdefghijklmnopqrstuvwxyz123456",
 			wantMatch: true,
 		},
 		{
 			name:      "Bearer Token",
-			pattern:   &BuiltInPatterns[6],
+			pattern:   GetPatternByName("bearer-token"),
 			input:     "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
 			wantMatch: true,
 		},
@@ -73,8 +73,8 @@ func TestBuiltInPatterns(t *testing.T) {
 }
 
 func TestPatternCount(t *testing.T) {
-	if len(BuiltInPatterns) != 8 {
-		t.Errorf("expected 8 built-in patterns, got %d", len(BuiltInPatterns))
+	if len(BuiltInPatterns) != 24 {
+		t.Errorf("expected 24 built-in patterns, got %d", len(BuiltInPatterns))
 	}
 }
 

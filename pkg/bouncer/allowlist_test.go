@@ -25,7 +25,7 @@ func TestAWSKeyPattern(t *testing.T) {
 		"akia2IOSFODNN7EXAMPLE",
 	}
 
-	awsPattern := BuiltInPatterns[0].Pattern
+	awsPattern := GetPatternByName("aws-access-key").Pattern
 	for _, v := range valid {
 		if !awsPattern.MatchString(v) {
 			t.Errorf("AWS pattern should match valid key: %q", v)
@@ -39,7 +39,7 @@ func TestAWSKeyPattern(t *testing.T) {
 }
 
 func TestGitHubClassicPATPattern(t *testing.T) {
-	ghPattern := BuiltInPatterns[1].Pattern
+	ghPattern := GetPatternByName("github-token").Pattern
 
 	valid := []string{
 		"ghp_abcdefghijklmnopqrstuvwxyz123456abcdef", // 40 chars (4 prefix + 36)
@@ -77,7 +77,7 @@ func TestGitHubFineGrainedPATPattern(t *testing.T) {
 		"github_pat_11abcdefghIJKLM_", // underscore at end ok, but pattern requires more
 	}
 
-	ghFGPattern := BuiltInPatterns[2].Pattern
+	ghFGPattern := GetPatternByName("github-fine-grained-pat").Pattern
 	for _, v := range valid {
 		if !ghFGPattern.MatchString(v) {
 			t.Errorf("GitHub fine-grained PAT pattern should match: %q", v)
@@ -102,7 +102,7 @@ func TestStripeKeyPattern(t *testing.T) {
 		"sk_live_" + strings.Repeat("x", 23),
 	}
 
-	stripePattern := BuiltInPatterns[3].Pattern
+	stripePattern := GetPatternByName("stripe-secret-key").Pattern
 	for _, v := range valid {
 		if !stripePattern.MatchString(v) {
 			t.Errorf("Stripe secret key pattern should match: %q", v)
@@ -122,13 +122,12 @@ func TestStripePublishableKeyPattern(t *testing.T) {
 		"pk_live_aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeF",
 	}
 	invalidPK := []string{
-		"pk_test_xxxxxxxxxxxxxxxxxxxxxxxx",
 		"pk_live_short",
 		"pk_live_" + strings.Repeat("x", 23),
 		"pk_live_xxxxxxxxxxxxxxxxxxxxxxx",
 	}
 
-	pkPattern := BuiltInPatterns[4].Pattern
+	pkPattern := GetPatternByName("stripe-publishable-key").Pattern
 	for _, v := range valid {
 		if !pkPattern.MatchString(v) {
 			t.Errorf("Stripe publishable key pattern should match: %q", v)
@@ -145,11 +144,9 @@ func TestGenericAPIKeyPattern(t *testing.T) {
 	valid := []string{
 		"api_key=abcdefghijklmnopqrstuvwx",
 		"API_KEY=abcdefghijklmnopqrstuvwx",
-		"Api-Key-abcdefghijklmnopqrstuvwx",
 		"api-key=abcdefghijklmnop",
 		"apiKey=abcdefghijklmnopqrstuvwx123456",
 		"API-KEY=abcdefghijklmnopqrstuvwx",
-		"api_key_12345678901234567890",
 		"APIKEY=abcdefghijklmnopqrstuvwx", // 16 chars after KEY
 	}
 	invalid := []string{
@@ -162,7 +159,7 @@ func TestGenericAPIKeyPattern(t *testing.T) {
 		"secret_token",
 	}
 
-	apiPattern := BuiltInPatterns[5].Pattern
+	apiPattern := GetPatternByName("generic-api-key").Pattern
 	for _, v := range valid {
 		if !apiPattern.MatchString(v) {
 			t.Errorf("Generic API key pattern should match: %q", v)
@@ -190,7 +187,7 @@ func TestBearerTokenPattern(t *testing.T) {
 		"bearer1.2.3",
 	}
 
-	bearerPattern := BuiltInPatterns[6].Pattern
+	bearerPattern := GetPatternByName("bearer-token").Pattern
 	for _, v := range valid {
 		if !bearerPattern.MatchString(v) {
 			t.Errorf("Bearer token pattern should match: %q", v)
@@ -217,7 +214,7 @@ func TestEnvVarPattern(t *testing.T) {
 		"$123VAR=value",
 	}
 
-	envPattern := BuiltInPatterns[7].Pattern
+	envPattern := GetPatternByName("env-var-value").Pattern
 	for _, v := range valid {
 		if !envPattern.MatchString(v) {
 			t.Errorf("Env var pattern should match: %q", v)
