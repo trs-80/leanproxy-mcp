@@ -64,6 +64,7 @@ func (r *router) GetComplexityTier(ctx context.Context, method string) (string, 
 }
 
 type RouteResult struct {
+	Index    int
 	Method   string
 	ServerID string
 	Server   *ServerEntry
@@ -133,6 +134,7 @@ func (r *router) RouteBatch(ctx context.Context, methods []string) ([]*ServerEnt
 				serverIDStr = server.ID
 			}
 			resultC <- &RouteResult{
+				Index:    idx,
 				Method:   m,
 				ServerID: serverIDStr,
 				Server:   server,
@@ -147,13 +149,8 @@ func (r *router) RouteBatch(ctx context.Context, methods []string) ([]*ServerEnt
 	}()
 
 	for result := range resultC {
-		for i, m := range methods {
-			if m == result.Method {
-				results[i] = result.Server
-				errors[i] = result.Error
-				break
-			}
-		}
+		results[result.Index] = result.Server
+		errors[result.Index] = result.Error
 	}
 
 	return results, errors

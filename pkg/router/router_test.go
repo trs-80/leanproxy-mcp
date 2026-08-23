@@ -409,3 +409,24 @@ func TestListTools(t *testing.T) {
 		}
 	})
 }
+
+func TestRouter_RouteBatch_DuplicateMethods(t *testing.T) {
+	ctx := context.Background()
+	serverReg := registry.NewRegistry(slog.Default(), "")
+	toolReg := NewToolRegistry()
+	_ = serverReg.Register(ctx, registry.ServerEntry{ID: "github-1", Transport: registry.TransportStdio})
+	_ = toolReg.RegisterTool(ctx, ToolEntry{Name: "github.create_issue", Namespace: "github", ServerID: "github-1"})
+	r := NewRouter(toolReg, serverReg, &mockLogger{})
+
+	methods := []string{"github.create_issue", "missing.tool", "github.create_issue"}
+	servers, errs := r.RouteBatch(ctx, methods)
+
+	for _, i := range []int{0, 2} {
+		if errs[i] != nil || servers[i] == nil || servers[i].ID != "github-1" {
+			t.Errorf("RouteBatch()[%d] = (%v, %v), want github-1", i, servers[i], errs[i])
+		}
+	}
+	if errs[1] == nil || servers[1] != nil {
+		t.Errorf("RouteBatch()[1] = (%v, %v), want error", servers[1], errs[1])
+	}
+}

@@ -612,7 +612,7 @@ func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
 
 				if _, hasResult := msg["result"]; !hasResult {
 					if _, hasError := msg["error"]; !hasError {
-						s.logger.Debug("received notification, ignoring", "name", s.name, "line", string(line))
+						s.logger.Debug("received notification, ignoring", "name", s.name, "line_len", len(line))
 						continue
 					}
 				}
@@ -938,7 +938,7 @@ func (s *StdioServerV2) sendRequest(ctx context.Context, req Request, stopCh cha
 				s.logger.Warn("discarding stale response", "name", s.name, "got_id", resp.ID, "want_id", wireID)
 				continue
 			}
-			s.logger.Debug("received raw response from server", "name", s.name, "response", fmt.Sprintf("%+v", resp))
+			s.logger.Debug("received raw response from server", "name", s.name, "id", resp.ID, "result_len", len(resp.Result), "has_error", resp.Error != nil)
 			if resp.Error != nil {
 				return nil, resp.Error
 			}

@@ -189,12 +189,28 @@ func ParseJSONRPCResponse(data []byte) (*JSONRPCResponse, error) {
 	return &resp, nil
 }
 
+// IsBatchRequest reports whether data is a non-empty JSON array. It inspects
+// only the leading bytes so the payload is not parsed twice (the caller parses
+// it for real afterwards); malformed input is rejected by that later parse.
 func IsBatchRequest(data []byte) bool {
-	var arr []json.RawMessage
-	if err := json.Unmarshal(data, &arr); err == nil && len(arr) > 0 {
-		return true
+	i := skipJSONSpace(data, 0)
+	if i >= len(data) || data[i] != '[' {
+		return false
 	}
-	return false
+	j := skipJSONSpace(data, i+1)
+	return j < len(data) && data[j] != ']'
+}
+
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) {
+		switch data[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
 }
 
 func ParseJSONRPCBatchRequest(data []byte, maxBatchSize int) ([]JSONRPCRequest, error) {

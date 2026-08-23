@@ -117,15 +117,26 @@ func (s *HTTPClientServer) closeClient() {
 }
 
 func (s *HTTPClientServer) ensureConnected(ctx context.Context) (*client.Client, error) {
-	s.reconnectMu.Lock()
-	defer s.reconnectMu.Unlock()
-
-	// Read the client and state under a single lock and use the locked local
-	// from here on: returning s.mcpClient after unlocking races a concurrent
-	// Close() (which does not hold reconnectMu) nil-ing and closing it.
+	// Fast path: a live client needs no reconnect serialization. Read the
+	// client and state under a single lock and use the locked local from here
+	// on: returning s.mcpClient after unlocking races a concurrent Close()
+	// (which does not hold reconnectMu) nil-ing and closing it.
 	s.mu.RLock()
 	current := s.mcpClient
 	state := s.state
+	s.mu.RUnlock()
+	if current != nil && state != StateDisconnected && state != StateError && state != StateStopped {
+		return current, nil
+	}
+
+	// Slow path: serialize reconnects, then re-check — another caller may have
+	// reconnected while we waited for reconnectMu.
+	s.reconnectMu.Lock()
+	defer s.reconnectMu.Unlock()
+
+	s.mu.RLock()
+	current = s.mcpClient
+	state = s.state
 	s.mu.RUnlock()
 
 	if state == StateStopped {

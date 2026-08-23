@@ -889,7 +889,8 @@ func handleBatchRequest(ctx context.Context, line []byte, writer *bufio.Writer, 
 		return
 	}
 
-	fmt.Fprintln(writer, string(data))
+	writer.Write(data)
+	writer.WriteByte('\n')
 }
 
 var ctx = context.Background()
@@ -1300,7 +1301,8 @@ func writeResponse(writer *bufio.Writer, resp *proxy.JSONRPCResponse) {
 		slog.Warn("failed to marshal response", "error", err)
 		return
 	}
-	fmt.Fprintln(writer, string(data))
+	writer.Write(data)
+	writer.WriteByte('\n')
 }
 
 func writeError(writer *bufio.Writer, code int, message string) {
@@ -1314,7 +1316,8 @@ func writeError(writer *bufio.Writer, code int, message string) {
 		slog.Warn("failed to marshal error response", "error", err)
 		return
 	}
-	fmt.Fprintln(writer, string(data))
+	writer.Write(data)
+	writer.WriteByte('\n')
 }
 
 // maxBatchSize caps the number of JSON-RPC requests accepted in a single
@@ -1336,14 +1339,22 @@ func serverTimeout(server *registry.ServerEntry) time.Duration {
 }
 
 func writeResponseAsync(writer *bufio.Writer, mu *sync.Mutex, resp *proxy.JSONRPCResponse) {
-	mu.Lock()
-	defer mu.Unlock()
 	data, err := json.Marshal(resp)
 	if err != nil {
 		slog.Warn("failed to marshal response", "error", err)
 		return
 	}
-	fmt.Fprintln(writer, string(data))
+	writeLineLocked(writer, mu, data)
+}
+
+// writeLineLocked writes one newline-terminated frame under the connection
+// writer lock. Callers marshal before taking the lock so that encoding is not
+// serialized behind a slow client's socket.
+func writeLineLocked(writer *bufio.Writer, mu *sync.Mutex, data []byte) {
+	mu.Lock()
+	defer mu.Unlock()
+	writer.Write(data)
+	writer.WriteByte('\n')
 	writer.Flush()
 }
 
@@ -1353,15 +1364,12 @@ func writeErrorAsync(writer *bufio.Writer, mu *sync.Mutex, code int, message str
 		Error:   errors.NewJSONRPCError(code, message),
 		ID:      nil,
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	data, err := json.Marshal(resp)
 	if err != nil {
 		slog.Warn("failed to marshal error response", "error", err)
 		return
 	}
-	fmt.Fprintln(writer, string(data))
-	writer.Flush()
+	writeLineLocked(writer, mu, data)
 }
 
 func handleBatchRequestAsync(ctx context.Context, line []byte, writer *bufio.Writer, writerMu *sync.Mutex, r Router, gt gateway.GatewayTools, p Pool) {
@@ -1469,10 +1477,7 @@ func handleBatchRequestAsync(ctx context.Context, line []byte, writer *bufio.Wri
 		return
 	}
 
-	writerMu.Lock()
-	defer writerMu.Unlock()
-	fmt.Fprintln(writer, string(data))
-	writer.Flush()
+	writeLineLocked(writer, writerMu, data)
 }
 
 func trimNewline(data []byte) []byte {

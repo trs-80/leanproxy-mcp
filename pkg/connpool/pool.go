@@ -432,13 +432,12 @@ func (cp *ConnectionPool) SendToolRequest(ctx context.Context, serverName string
 
 	if pool != nil {
 		atomic.AddInt64(&pool.metrics.TotalRequests, 1)
-		metrics := pool.GetMetrics()
-		if metrics.TotalRequests > 0 {
-			newAvg := (metrics.AvgLatencyMs*float64(metrics.TotalRequests-1) + latency) / float64(metrics.TotalRequests)
-			pool.mu.Lock()
-			pool.metrics.AvgLatencyMs = newAvg
-			pool.mu.Unlock()
+		pool.mu.Lock()
+		total := pool.metrics.TotalRequests
+		if total > 0 {
+			pool.metrics.AvgLatencyMs = (pool.metrics.AvgLatencyMs*float64(total-1) + latency) / float64(total)
 		}
+		pool.mu.Unlock()
 	}
 
 	if err != nil {

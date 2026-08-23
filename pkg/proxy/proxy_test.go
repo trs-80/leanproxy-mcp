@@ -160,6 +160,26 @@ func TestIsBatchRequest(t *testing.T) {
 			data:     []byte(`{invalid}`),
 			expected: false,
 		},
+		{
+			name:     "leading whitespace before batch",
+			data:     []byte(" \t\r\n[{\"jsonrpc\":\"2.0\",\"method\":\"test\",\"id\":1}]"),
+			expected: true,
+		},
+		{
+			name:     "empty array with inner whitespace",
+			data:     []byte("[ \n ]"),
+			expected: false,
+		},
+		{
+			name:     "empty input",
+			data:     []byte(``),
+			expected: false,
+		},
+		{
+			name:     "whitespace only",
+			data:     []byte("   "),
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -84,22 +84,18 @@ func (h *JITHandler) extractToolName(params json.RawMessage) (string, error) {
 		return "", fmt.Errorf("jit: params is nil")
 	}
 
-	var paramsMap map[string]interface{}
-	if err := json.Unmarshal(params, &paramsMap); err != nil {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
 		return "", fmt.Errorf("jit: parse params: %w", err)
 	}
 
-	nameVal, ok := paramsMap["name"]
-	if !ok {
+	if p.Name == "" {
 		return "", fmt.Errorf("jit: missing 'name' param")
 	}
 
-	name, ok := nameVal.(string)
-	if !ok {
-		return "", fmt.Errorf("jit: 'name' param is not a string")
-	}
-
-	return strings.TrimSpace(name), nil
+	return strings.TrimSpace(p.Name), nil
 }
 
 func newSuccessResponse(result interface{}, id interface{}) JSONRPCResponse {
