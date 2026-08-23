@@ -604,22 +604,16 @@ func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
 				// is enough for diagnostics; the redacted payload is visible to the client.
 				s.logger.Debug("read from server stdout", "name", s.name, "line_len", len(line))
 
-				var msg map[string]json.RawMessage
-				if err := json.Unmarshal(line, &msg); err != nil {
-					s.logger.Warn("failed to parse response", "name", s.name, "error", err)
-					continue
-				}
-
-				if _, hasResult := msg["result"]; !hasResult {
-					if _, hasError := msg["error"]; !hasError {
-						s.logger.Debug("received notification, ignoring", "name", s.name, "line_len", len(line))
-						continue
-					}
-				}
-
+				// Single parse: a present "result" key leaves Result non-empty even
+				// for JSON null (RawMessage keeps the literal), so key presence is
+				// preserved without a separate map decode of the same bytes.
 				var resp Response
 				if err := json.Unmarshal(line, &resp); err != nil {
 					s.logger.Warn("failed to parse response", "name", s.name, "error", err)
+					continue
+				}
+				if len(resp.Result) == 0 && resp.Error == nil {
+					s.logger.Debug("received notification, ignoring", "name", s.name, "line_len", len(line))
 					continue
 				}
 				select {

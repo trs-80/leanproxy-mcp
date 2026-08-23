@@ -292,7 +292,8 @@ func (p *StdioPool) MarkServerMCPInitialized(name string) {
 }
 
 func (p *StdioPool) waitForServerReady(ctx context.Context, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -300,7 +301,7 @@ func (p *StdioPool) waitForServerReady(ctx context.Context, name string, timeout
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Until(deadline)):
+		case <-deadline.C:
 			return fmt.Errorf("timeout waiting for server ready")
 		case <-ticker.C:
 			server, err := p.GetServer(name)
@@ -338,10 +339,12 @@ func (p *StdioPool) PutRequest(name string, req Request) error {
 		timeout = 30 * time.Second
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case server.requestCh <- req:
 		return nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		return fmt.Errorf("pool: request timeout for %s", name)
 	case <-p.ctx.Done():
 		return p.ctx.Err()
@@ -482,6 +485,8 @@ func (p *StdioPool) SendRequest(ctx context.Context, serverName string, req *pro
 
 	resultCh := make(chan *Response, 1)
 	errorCh := make(chan error, 1)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	poolReq := Request{
 		Method:   req.Method,
@@ -508,7 +513,7 @@ func (p *StdioPool) SendRequest(ctx context.Context, serverName string, req *pro
 		}, nil
 	case err := <-errorCh:
 		return nil, err
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("pool: request timeout after %v", timeout)
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -526,6 +531,8 @@ func (p *StdioPool) SendRequestToServerWithID(ctx context.Context, name string, 
 
 	resultCh := make(chan *Response, 1)
 	errorCh := make(chan error, 1)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	poolReq := Request{
 		Method:   method,
@@ -545,7 +552,7 @@ func (p *StdioPool) SendRequestToServerWithID(ctx context.Context, name string, 
 		return resp, nil
 	case err := <-errorCh:
 		return nil, err
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("request timeout after %v", timeout)
 	case <-ctx.Done():
 		return nil, ctx.Err()

@@ -211,7 +211,10 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 
 	if h.lazyLoading {
 		h.logger.Debug("lazy loading enabled, populating tool stubs from servers")
-		if len(h.toolCache.tools) == 0 {
+		h.toolCache.mu.RLock()
+		empty := len(h.toolCache.tools) == 0
+		h.toolCache.mu.RUnlock()
+		if empty {
 			h.refreshToolCacheFromServers(ctx)
 		}
 
