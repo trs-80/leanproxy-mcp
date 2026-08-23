@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -244,18 +245,34 @@ func (r *Redactor) RedactJSON(data []byte) ([]byte, int, error) {
 	return redacted, count, nil
 }
 
+// sensitiveKeyPattern matches JSON object keys whose string values are
+// redacted wholesale, regardless of whether the value looks like a known
+// secret format (SLR-09 key-aware redaction).
+var sensitiveKeyPattern = regexp.MustCompile(`(?i)(password|passwd|secret|token|api[_-]?key|authorization|private[_-]?key|credential|client_secret)`)
+
 func (r *Redactor) redactInterface(val interface{}) (interface{}, int) {
 	switch v := val.(type) {
 	case string:
 		return r.redactString(v)
 	case map[string]interface{}:
 		totalCount := 0
+		out := make(map[string]interface{}, len(v))
 		for k, val := range v {
-			newVal, count := r.redactInterface(val)
-			v[k] = newVal
+			// Keys can carry secrets too (NEW-A-4).
+			newKey, keyCount := r.redactString(k)
+			totalCount += keyCount
+
+			var newVal interface{}
+			var count int
+			if s, ok := val.(string); ok && s != "" && sensitiveKeyPattern.MatchString(k) {
+				newVal, count = SecretRedacted, 1
+			} else {
+				newVal, count = r.redactInterface(val)
+			}
+			out[newKey] = newVal
 			totalCount += count
 		}
-		return v, totalCount
+		return out, totalCount
 	case []interface{}:
 		totalCount := 0
 		for i, val := range v {
@@ -269,8 +286,27 @@ func (r *Redactor) redactInterface(val interface{}) (interface{}, int) {
 	}
 }
 
+// stripInvisible removes zero-width and bidirectional control characters that
+// can be inserted inside a secret to split it so that no pattern matches.
+func stripInvisible(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 0x200B && r <= 0x200D, // ZWSP, ZWNJ, ZWJ
+			r == 0x2060,                // word joiner
+			r == 0xFEFF,                // BOM / ZWNBSP
+			r >= 0x202A && r <= 0x202E, // bidi embedding/override
+			r >= 0x2066 && r <= 0x2069: // bidi isolates
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func (r *Redactor) redactString(data string) (string, int) {
-	result := data
+	// Match against the string with invisible characters removed; if nothing
+	// matches, return the original so benign content (e.g. ZWJ emoji
+	// sequences) is passed through byte-for-byte.
+	result := stripInvisible(data)
 	totalCount := 0
 	for _, pattern := range r.patterns {
 		matches := pattern.FindAllString(result, -1)
@@ -278,6 +314,9 @@ func (r *Redactor) redactString(data string) (string, int) {
 			totalCount += len(matches)
 			result = pattern.ReplaceAllString(result, SecretRedacted)
 		}
+	}
+	if totalCount == 0 {
+		return data, 0
 	}
 	return result, totalCount
 }
