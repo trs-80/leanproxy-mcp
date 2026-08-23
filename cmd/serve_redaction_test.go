@@ -186,9 +186,13 @@ func TestHandleSingleRequestAsync_RedactsBothDirections(t *testing.T) {
 func TestHandleBatchRequest_RedactsBothDirections(t *testing.T) {
 	withBuiltInRedactor(t)
 
+	var forwardedMu sync.Mutex
 	var forwarded [][]byte
 	mockP := &mockPool{sendRequestFunc: func(_ context.Context, _ string, req *proxy.JSONRPCRequest, _ time.Duration) (*proxy.JSONRPCResponse, error) {
+		// Batch entries execute concurrently; guard the capture slice.
+		forwardedMu.Lock()
 		forwarded = append(forwarded, append([]byte(nil), req.Params...))
+		forwardedMu.Unlock()
 		return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`"` + testGHPat + `"`), ID: req.ID}, nil
 	}}
 

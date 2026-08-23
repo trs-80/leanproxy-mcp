@@ -899,3 +899,42 @@ func TestIsNonLoopbackListen(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleBatchRequestAsync_ParallelPreservesOrder proves batch entries run
+// concurrently and their responses come back in request order regardless of
+// upstream completion order.
+func TestHandleBatchRequestAsync_ParallelPreservesOrder(t *testing.T) {
+	delays := map[string]time.Duration{"a": 300 * time.Millisecond, "b": 150 * time.Millisecond, "c": 10 * time.Millisecond}
+	mockP := &mockPool{sendRequestFunc: func(_ context.Context, _ string, req *proxy.JSONRPCRequest, _ time.Duration) (*proxy.JSONRPCResponse, error) {
+		time.Sleep(delays[req.Method])
+		return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`"` + req.Method + `"`), ID: req.ID}, nil
+	}}
+
+	line := []byte(`[{"jsonrpc":"2.0","method":"a","id":1},{"jsonrpc":"2.0","method":"b","id":2},{"jsonrpc":"2.0","method":"c","id":3}]`)
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	start := time.Now()
+	handleBatchRequestAsync(context.Background(), line, w, &sync.Mutex{}, &mockRouter{}, &mockGatewayTools{}, mockP)
+	w.Flush()
+	elapsed := time.Since(start)
+
+	var got []struct {
+		Result string      `json:"result"`
+		ID     interface{} `json:"id"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal batch response: %v (%s)", err, buf.Bytes())
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 responses, got %d", len(got))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if got[i].Result != want {
+			t.Errorf("response[%d] = %q, want %q (order not preserved)", i, got[i].Result, want)
+		}
+	}
+	// Serial execution would take >= 460ms.
+	if elapsed >= 400*time.Millisecond {
+		t.Errorf("batch did not run in parallel: took %v", elapsed)
+	}
+}

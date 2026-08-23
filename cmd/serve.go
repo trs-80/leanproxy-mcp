@@ -1384,91 +1384,31 @@ func handleBatchRequestAsync(ctx context.Context, line []byte, writer *bufio.Wri
 		return
 	}
 
-	responses := make([]*proxy.JSONRPCResponse, 0, len(reqs))
+	// Execute batch entries concurrently (bounded) while preserving response
+	// order; entries with a nil ID are notifications and produce no response.
+	slots := make([]*proxy.JSONRPCResponse, len(reqs))
+	sem := make(chan struct{}, batchConcurrency)
+	var wg sync.WaitGroup
 	for i := range reqs {
 		req := &reqs[i]
 		if req.ID == nil {
 			continue
 		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, req *proxy.JSONRPCRequest) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			slots[i] = processBatchItem(ctx, req, r, gt, p)
+		}(i, req)
+	}
+	wg.Wait()
 
-		if err := redactParams(req); err != nil {
-			responses = append(responses, &proxy.JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, redactionFailedMessage),
-				ID:      req.ID,
-			})
-			continue
-		}
-
-		if resp := checkInjection(req); resp != nil {
+	responses := make([]*proxy.JSONRPCResponse, 0, len(reqs))
+	for _, resp := range slots {
+		if resp != nil {
 			responses = append(responses, resp)
-			continue
 		}
-
-		if isGatewayTool(req.Method) {
-			resp := handleGatewayToolSync(ctx, req, gt)
-			if resp != nil {
-				responses = append(responses, resp)
-			}
-			continue
-		}
-
-		server, err := r.Route(ctx, req.Method)
-		if err != nil {
-			responses = append(responses, &proxy.JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeMethodNotFound, "Method not found"),
-				ID:      req.ID,
-			})
-			continue
-		}
-
-		logModelSelection(ctx, server, req.Method)
-		recordProvider(server)
-		provider := injectBreakpoints(server, req)
-
-		cached, prompt, embedding := semanticCacheLookup(ctx, req)
-		if cached != nil && cached.HitType != cache.HitMiss {
-			responses = append(responses, cachedResponse(req, cached.Response))
-			continue
-		}
-
-		timeout := serverTimeout(server)
-
-		if err := redactWithSidecar(ctx, req); err != nil {
-			responses = append(responses, &proxy.JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, redactionFailedMessage),
-				ID:      req.ID,
-			})
-			continue
-		}
-
-		resp, err := p.SendRequest(ctx, server.ID, req, timeout)
-		if err != nil {
-			msg, _ := upstreamErrorResponse(server.ID, req.Method, err)
-			responses = append(responses, &proxy.JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, msg),
-				ID:      req.ID,
-			})
-			continue
-		}
-
-		if err := redactResponse(resp); err != nil {
-			responses = append(responses, &proxy.JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, redactionFailedMessage),
-				ID:      req.ID,
-			})
-			continue
-		}
-
-		if resp.Error == nil {
-			cache.ProcessResponseFor(provider, resp.Result)
-			semanticCacheStore(ctx, req, prompt, resp.Result, embedding)
-		}
-		responses = append(responses, resp)
 	}
 
 	data, err := json.Marshal(responses)
@@ -1478,6 +1418,85 @@ func handleBatchRequestAsync(ctx context.Context, line []byte, writer *bufio.Wri
 	}
 
 	writeLineLocked(writer, writerMu, data)
+}
+
+// batchConcurrency bounds how many entries of one JSON-RPC batch execute at
+// once. Each entry still honors the per-server timeout; the bound keeps a
+// large batch from monopolizing upstream servers.
+const batchConcurrency = 8
+
+// processBatchItem executes one batch entry through the same pipeline as a
+// single request and returns its response (nil for gateway tools that produce
+// none). Every helper it calls synchronizes its own shared state, so items
+// are safe to run concurrently.
+func processBatchItem(ctx context.Context, req *proxy.JSONRPCRequest, r Router, gt gateway.GatewayTools, p Pool) *proxy.JSONRPCResponse {
+	if err := redactParams(req); err != nil {
+		return &proxy.JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, redactionFailedMessage),
+			ID:      req.ID,
+		}
+	}
+
+	if resp := checkInjection(req); resp != nil {
+		return resp
+	}
+
+	if isGatewayTool(req.Method) {
+		return handleGatewayToolSync(ctx, req, gt)
+	}
+
+	server, err := r.Route(ctx, req.Method)
+	if err != nil {
+		return &proxy.JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   errors.NewJSONRPCError(errors.ErrCodeMethodNotFound, "Method not found"),
+			ID:      req.ID,
+		}
+	}
+
+	logModelSelection(ctx, server, req.Method)
+	recordProvider(server)
+	provider := injectBreakpoints(server, req)
+
+	cached, prompt, embedding := semanticCacheLookup(ctx, req)
+	if cached != nil && cached.HitType != cache.HitMiss {
+		return cachedResponse(req, cached.Response)
+	}
+
+	timeout := serverTimeout(server)
+
+	if err := redactWithSidecar(ctx, req); err != nil {
+		return &proxy.JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, redactionFailedMessage),
+			ID:      req.ID,
+		}
+	}
+
+	resp, err := p.SendRequest(ctx, server.ID, req, timeout)
+	if err != nil {
+		msg, _ := upstreamErrorResponse(server.ID, req.Method, err)
+		return &proxy.JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, msg),
+			ID:      req.ID,
+		}
+	}
+
+	if err := redactResponse(resp); err != nil {
+		return &proxy.JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, redactionFailedMessage),
+			ID:      req.ID,
+		}
+	}
+
+	if resp.Error == nil {
+		cache.ProcessResponseFor(provider, resp.Result)
+		semanticCacheStore(ctx, req, prompt, resp.Result, embedding)
+	}
+	return resp
 }
 
 func trimNewline(data []byte) []byte {

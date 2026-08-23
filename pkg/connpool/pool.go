@@ -74,36 +74,22 @@ func (c *ClientConnection) GetClient() *client.Client {
 }
 
 type ServerPool struct {
-	mu           sync.Mutex
-	available    chan *ClientConnection
-	active       map[*ClientConnection]struct{}
-	maxSize      int
-	waitingQueue chan waitRequest
-	maxQueueSize int
-	config       PoolConfig
-	logger       *slog.Logger
-	metrics      PoolMetrics
-}
-
-type waitRequest struct {
-	client  chan *ClientConnection
-	timeout <-chan time.Time
+	mu        sync.Mutex
+	available chan *ClientConnection
+	active    map[*ClientConnection]struct{}
+	maxSize   int
+	config    PoolConfig
+	logger    *slog.Logger
+	metrics   PoolMetrics
 }
 
 func NewServerPool(maxSize int, config PoolConfig, logger *slog.Logger) *ServerPool {
-	maxQueueSize := maxSize * 2
-	if maxQueueSize < 10 {
-		maxQueueSize = 10
-	}
-
 	return &ServerPool{
-		available:    make(chan *ClientConnection, maxSize),
-		active:       make(map[*ClientConnection]struct{}),
-		maxSize:      maxSize,
-		waitingQueue: make(chan waitRequest, maxQueueSize),
-		maxQueueSize: maxQueueSize,
-		config:       config,
-		logger:       logger,
+		available: make(chan *ClientConnection, maxSize),
+		active:    make(map[*ClientConnection]struct{}),
+		maxSize:   maxSize,
+		config:    config,
+		logger:    logger,
 	}
 }
 
@@ -160,36 +146,51 @@ func (sp *ServerPool) createNewClient(ctx context.Context, createFunc func() (*c
 	return conn, nil
 }
 
+// waitForClient blocks until a pooled connection is returned, the context is
+// canceled, or MaxWaitTime elapses. It waits directly on the available
+// channel — the same channel ReturnClient feeds — so a returned connection
+// wakes a waiter immediately. (A previous design parked waiters on a queue
+// that nothing consumed, so every waiter burned the full MaxWaitTime.)
 func (sp *ServerPool) waitForClient(ctx context.Context, createFunc func() (*client.Client, error)) (*ClientConnection, error) {
-	clientChan := make(chan *ClientConnection, 1)
-	timeoutChan := time.After(sp.config.MaxWaitTime)
+	timer := time.NewTimer(sp.config.MaxWaitTime)
+	defer timer.Stop()
 
 	atomic.AddInt64(&sp.metrics.WaitingClients, 1)
+	defer atomic.AddInt64(&sp.metrics.WaitingClients, -1)
 
-	select {
-	case sp.waitingQueue <- waitRequest{client: clientChan, timeout: timeoutChan}:
-	case <-ctx.Done():
-		atomic.AddInt64(&sp.metrics.WaitingClients, -1)
-		atomic.AddInt64(&sp.metrics.Timeouts, 1)
-		return nil, ctx.Err()
-	case <-timeoutChan:
-		atomic.AddInt64(&sp.metrics.WaitingClients, -1)
-		atomic.AddInt64(&sp.metrics.Timeouts, 1)
-		return nil, fmt.Errorf("pool: wait timeout after %v", sp.config.MaxWaitTime)
-	}
-
-	select {
-	case conn := <-clientChan:
-		atomic.AddInt64(&sp.metrics.WaitingClients, -1)
-		atomic.AddInt64(&sp.metrics.ActiveClients, 1)
-		return conn, nil
-	case <-ctx.Done():
-		atomic.AddInt64(&sp.metrics.WaitingClients, -1)
-		return nil, ctx.Err()
-	case <-timeoutChan:
-		atomic.AddInt64(&sp.metrics.WaitingClients, -1)
-		atomic.AddInt64(&sp.metrics.Timeouts, 1)
-		return nil, fmt.Errorf("pool: wait timeout after %v", sp.config.MaxWaitTime)
+	for {
+		select {
+		case conn := <-sp.available:
+			atomic.AddInt64(&sp.metrics.AvailableClients, -1)
+			if conn.IsHealthy() {
+				sp.mu.Lock()
+				sp.active[conn] = struct{}{}
+				sp.mu.Unlock()
+				atomic.AddInt64(&sp.metrics.ActiveClients, 1)
+				return conn, nil
+			}
+			// Unhealthy connection freed a capacity slot: replace it if we
+			// are under the cap, otherwise keep waiting.
+			sp.logger.Debug("client unhealthy while waiting, closing", "server", conn.server)
+			conn.client.Close()
+			sp.mu.Lock()
+			currentActive := len(sp.active)
+			sp.mu.Unlock()
+			if currentActive < sp.maxSize {
+				atomic.AddInt64(&sp.metrics.ActiveClients, 1)
+				newConn, err := sp.createNewClient(ctx, createFunc)
+				if err != nil {
+					atomic.AddInt64(&sp.metrics.ActiveClients, -1)
+					return nil, err
+				}
+				return newConn, nil
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			atomic.AddInt64(&sp.metrics.Timeouts, 1)
+			return nil, fmt.Errorf("pool: wait timeout after %v", sp.config.MaxWaitTime)
+		}
 	}
 }
 
@@ -241,10 +242,10 @@ func (sp *ServerPool) Close() error {
 func (sp *ServerPool) GetMetrics() PoolMetrics {
 	sp.mu.Lock()
 	metrics := sp.metrics
+	metrics.ActiveClients = int64(len(sp.active))
 	sp.mu.Unlock()
 
 	metrics.AvailableClients = int64(len(sp.available))
-	metrics.ActiveClients = int64(len(sp.active))
 
 	return metrics
 }
