@@ -2,7 +2,6 @@ package pool
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	errstd "errors"
@@ -106,7 +105,6 @@ type StdioServerV2 struct {
 	stdout          io.Reader
 	mu              sync.Mutex
 	requestCh       chan Request
-	responseCh      chan Response
 	state           int32
 	stats           ServerStats
 	restartCount    int
@@ -146,6 +144,17 @@ type StdioServerV2 struct {
 	// nextRequestID generates the internal wire IDs used toward the child
 	// process so responses can be matched to the exact in-flight request.
 	nextRequestID atomic.Int64
+	// pending maps in-flight wire IDs to the channel their response is
+	// delivered on, so up to maxConcurrent requests can wait concurrently.
+	// The counter is monotonic across generations, so a response from a
+	// previous process generation can never be delivered to a new request.
+	pending   map[int64]chan Response
+	pendingMu sync.Mutex
+	// stdinMu serializes writes to the child's stdin so concurrently
+	// dispatched request frames never interleave.
+	stdinMu sync.Mutex
+	// dispatchSem bounds the number of concurrently processed requests.
+	dispatchSem chan struct{}
 }
 
 func newServerV2(name string, config StdioServerConfig, logger *slog.Logger) *StdioServerV2 {
@@ -179,7 +188,8 @@ func newServerV2(name string, config StdioServerConfig, logger *slog.Logger) *St
 		name:            name,
 		config:          config,
 		requestCh:       make(chan Request, maxConcurrent),
-		responseCh:      make(chan Response, maxConcurrent),
+		pending:         make(map[int64]chan Response),
+		dispatchSem:     make(chan struct{}, maxConcurrent),
 		state:           stateIdle,
 		stats:           ServerStats{},
 		maxRestarts:     5,
@@ -220,16 +230,6 @@ func (s *StdioServerV2) setState(newState int32) {
 
 // drainResponses discards any responses buffered in responseCh. Called at
 // spawn time so a fresh generation starts with an empty channel.
-func (s *StdioServerV2) drainResponses() {
-	for {
-		select {
-		case <-s.responseCh:
-		default:
-			return
-		}
-	}
-}
-
 func (s *StdioServerV2) compareAndSwapState(oldState, newState int32) bool {
 	return atomic.CompareAndSwapInt32(&s.state, oldState, newState)
 }
@@ -355,11 +355,10 @@ func (s *StdioServerV2) spawnLocked(ctx context.Context) error {
 	s.genStopCh = genStopCh
 	s.genStopOnce = genStopOnce
 
-	// Drop responses buffered by previous generations (late answers to
-	// timed-out or killed requests) so the new generation can never consume
-	// a stale response. Belt-and-braces on top of the wire-ID matching in
-	// sendRequest.
-	s.drainResponses()
+	// Waiters from previous generations exited via their generation's stop
+	// channel and deregister their own pending entries; wire IDs are
+	// monotonic across generations, so the new process can never satisfy a
+	// stale entry even if one momentarily lingers.
 	s.generation.Add(1)
 
 	s.logger.Info("server spawned", "name", s.name, "pid", cmd.Process.Pid, "pgid", s.pgid, "command", s.config.Command, "args", s.config.Args)
@@ -616,11 +615,7 @@ func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
 					s.logger.Debug("received notification, ignoring", "name", s.name, "line_len", len(line))
 					continue
 				}
-				select {
-				case s.responseCh <- resp:
-				default:
-					s.logger.Warn("response channel full, dropping response", "name", s.name)
-				}
+				s.deliverResponse(resp)
 			} else {
 				s.handleReadFailure(scanner.Err(), stopCh)
 				return
@@ -815,7 +810,23 @@ func (s *StdioServerV2) runRequestLoop(ctx context.Context, stopCh chan struct{}
 	for {
 		select {
 		case req := <-s.requestCh:
-			s.processRequest(ctx, req, stopCh)
+			// Dispatch concurrently, bounded by maxConcurrent, so one slow
+			// tool call no longer head-of-line-blocks every other request to
+			// this server. Stdin writes stay serialized (stdinMu) and each
+			// response is routed to its waiter by unique wire ID.
+			select {
+			case s.dispatchSem <- struct{}{}:
+				s.wg.Add(1)
+				go func(req Request) {
+					defer s.wg.Done()
+					defer func() { <-s.dispatchSem }()
+					s.processRequest(ctx, req, stopCh)
+				}(req)
+			case <-ctx.Done():
+				return
+			case <-stopCh:
+				return
+			}
 
 		case <-s.healthTicker.C:
 			s.checkIdleTimeout(ctx)
@@ -825,6 +836,43 @@ func (s *StdioServerV2) runRequestLoop(ctx context.Context, stopCh chan struct{}
 		case <-stopCh:
 			return
 		}
+	}
+}
+
+// deliverResponse hands a parsed response to the request waiting on its wire
+// ID. Responses with no matching waiter (timed out, cross-generation, or
+// unsolicited) are dropped.
+func (s *StdioServerV2) deliverResponse(resp Response) {
+	id, ok := wireIDFromJSON(resp.ID)
+	var ch chan Response
+	if ok {
+		s.pendingMu.Lock()
+		ch = s.pending[id]
+		delete(s.pending, id)
+		s.pendingMu.Unlock()
+	}
+	if ch == nil {
+		s.logger.Warn("discarding unmatched response", "name", s.name, "got_id", resp.ID)
+		return
+	}
+	// Buffered (capacity 1) and removed from the map above, so this send
+	// never blocks and never races another sender.
+	ch <- resp
+}
+
+// wireIDFromJSON converts a decoded JSON-RPC id back to the int64 wire ID
+// this server generated. Decoded numbers arrive as float64.
+func wireIDFromJSON(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		i := int64(n)
+		return i, float64(i) == n
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
 	}
 }
 
@@ -911,8 +959,23 @@ func (s *StdioServerV2) sendRequest(ctx context.Context, req Request, stopCh cha
 	stdin := s.stdin
 	s.mu.Unlock()
 
+	// Register the waiter before the frame is written so the response cannot
+	// arrive before anyone is listening for it.
+	respCh := make(chan Response, 1)
+	s.pendingMu.Lock()
+	s.pending[wireID] = respCh
+	s.pendingMu.Unlock()
+	defer func() {
+		s.pendingMu.Lock()
+		delete(s.pending, wireID)
+		s.pendingMu.Unlock()
+	}()
+
 	s.logger.Debug("writing to stdin", "name", s.name, "method", req.Method, "id", wireID, "len", len(encoded))
-	if _, err := fmt.Fprintln(stdin, string(encoded)); err != nil {
+	s.stdinMu.Lock()
+	_, err = stdin.Write(append(encoded, '\n'))
+	s.stdinMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("pool: write stdin: %w", err)
 	}
 
@@ -923,46 +986,23 @@ func (s *StdioServerV2) sendRequest(ctx context.Context, req Request, stopCh cha
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	for {
-		select {
-		case resp := <-s.responseCh:
-			if !jsonIDEqual(resp.ID, wireID) {
-				// Stale or cross-generation response: belongs to a timed-out
-				// or killed request. Drop it and keep waiting for ours.
-				s.logger.Warn("discarding stale response", "name", s.name, "got_id", resp.ID, "want_id", wireID)
-				continue
-			}
-			s.logger.Debug("received raw response from server", "name", s.name, "id", resp.ID, "result_len", len(resp.Result), "has_error", resp.Error != nil)
-			if resp.Error != nil {
-				return nil, resp.Error
-			}
-			return resp.Result, nil
-		case <-timer.C:
-			return nil, fmt.Errorf("pool: request timeout after %v (recent stderr: %s)", timeout, s.stderrLines.String())
-		case <-stopCh:
-			// The process generation is being torn down (restart/shutdown):
-			// fail fast instead of hanging until the request timeout while the
-			// stop path waits on this goroutine.
-			return nil, fmt.Errorf("pool: server %s is stopping", s.name)
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	select {
+	case resp := <-respCh:
+		s.logger.Debug("received raw response from server", "name", s.name, "id", resp.ID, "result_len", len(resp.Result), "has_error", resp.Error != nil)
+		if resp.Error != nil {
+			return nil, resp.Error
 		}
+		return resp.Result, nil
+	case <-timer.C:
+		return nil, fmt.Errorf("pool: request timeout after %v (recent stderr: %s)", timeout, s.stderrLines.String())
+	case <-stopCh:
+		// The process generation is being torn down (restart/shutdown):
+		// fail fast instead of hanging until the request timeout while the
+		// stop path waits on this goroutine.
+		return nil, fmt.Errorf("pool: server %s is stopping", s.name)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-}
-
-// jsonIDEqual compares two JSON-RPC IDs by their canonical JSON encoding so
-// that numeric equality holds across decoder types (e.g. int64(1) vs the
-// float64(1) produced by unmarshalling into interface{}).
-func jsonIDEqual(a, b interface{}) bool {
-	ab, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	bb, err := json.Marshal(b)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(ab, bb)
 }
 
 func (s *StdioServerV2) sendNotification(ctx context.Context, method string, params map[string]interface{}) error {
@@ -984,7 +1024,10 @@ func (s *StdioServerV2) sendNotification(ctx context.Context, method string, par
 	stdin := s.stdin
 	s.mu.Unlock()
 
-	if _, err := fmt.Fprintln(stdin, string(encoded)); err != nil {
+	s.stdinMu.Lock()
+	_, err = stdin.Write(append(encoded, '\n'))
+	s.stdinMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("pool: write stdin: %w", err)
 	}
 

@@ -60,10 +60,15 @@ func TestIsTransportError(t *testing.T) {
 }
 
 func TestJSONIDEqual(t *testing.T) {
-	require.True(t, jsonIDEqual(float64(1), int64(1)), "decoded float64 ID must match int64 wire ID")
-	require.True(t, jsonIDEqual("a", "a"))
-	require.False(t, jsonIDEqual("1", int64(1)), "string and numeric IDs are distinct")
-	require.False(t, jsonIDEqual(nil, int64(1)))
+	id, ok := wireIDFromJSON(float64(1))
+	require.True(t, ok, "decoded float64 ID must map back to an int64 wire ID")
+	require.Equal(t, int64(1), id)
+	_, ok = wireIDFromJSON("1")
+	require.False(t, ok, "string IDs are never wire IDs")
+	_, ok = wireIDFromJSON(nil)
+	require.False(t, ok)
+	_, ok = wireIDFromJSON(float64(1.5))
+	require.False(t, ok, "non-integral numbers are never wire IDs")
 }
 
 func TestReconnectSettingsValidateClampsBackoff(t *testing.T) {
@@ -205,9 +210,10 @@ func TestSendRequestDropsStaleResponses(t *testing.T) {
 	require.NoError(t, server.spawn(ctx))
 	defer server.stop()
 
-	// Pre-buffer a stale response whose ID cannot match the internal wire ID
-	// of the next request.
-	server.responseCh <- Response{ID: "stale-from-old-generation", Result: json.RawMessage(`{"stale":true}`)}
+	// Deliver a stale response whose ID cannot match the internal wire ID of
+	// the next request; with no pending waiter it must be dropped.
+	server.deliverResponse(Response{ID: "stale-from-old-generation", Result: json.RawMessage(`{"stale":true}`)})
+	server.deliverResponse(Response{ID: float64(999999), Result: json.RawMessage(`{"stale":true}`)})
 
 	result, err := server.sendRequest(ctx, Request{Method: "tools/list", ID: 1, Timeout: 5 * time.Second}, make(chan struct{}))
 	require.NoError(t, err)

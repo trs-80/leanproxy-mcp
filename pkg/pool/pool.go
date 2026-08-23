@@ -119,9 +119,12 @@ type StdioPool struct {
 	waiterMu        sync.Mutex
 	rateLimiters    map[string]*concurrent.RateLimiter
 	circuitBreakers map[string]*concurrent.CircuitBreaker
-	maxQueueSize    int
-	workerPool      *concurrent.WorkerPool
-	reconnect       ReconnectSettings
+	// starting guards names with a spawn in flight so StartServer can run
+	// the (slow) process spawn outside p.mu without racing a duplicate start.
+	starting     map[string]struct{}
+	maxQueueSize int
+	workerPool   *concurrent.WorkerPool
+	reconnect    ReconnectSettings
 }
 
 // NewStdioPool creates a new StdioPool with the specified maximum servers per name and idle timeout.
@@ -142,6 +145,7 @@ func NewStdioPool(maxPerServer int, idleTimeout time.Duration, logger *slog.Logg
 		requestWaiters:  make(map[string][]chan Request),
 		rateLimiters:    make(map[string]*concurrent.RateLimiter),
 		circuitBreakers: make(map[string]*concurrent.CircuitBreaker),
+		starting:        make(map[string]struct{}),
 		maxQueueSize:    1000,
 	}
 
@@ -178,14 +182,28 @@ func (p *StdioPool) StartServer(ctx context.Context, config *migrate.ServerConfi
 		return fmt.Errorf("pool: %w", err)
 	}
 
+	// Reserve the name under the lock, then spawn without it: process start
+	// takes long enough that holding p.mu here would block every request to
+	// every other server for the duration.
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if server, exists := p.servers[config.Name]; exists {
 		if server.isHealthy() {
+			p.mu.Unlock()
 			return fmt.Errorf("pool: server %s already running", config.Name)
 		}
 	}
+	if _, inFlight := p.starting[config.Name]; inFlight {
+		p.mu.Unlock()
+		return fmt.Errorf("pool: server %s is already starting", config.Name)
+	}
+	p.starting[config.Name] = struct{}{}
+	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		delete(p.starting, config.Name)
+		p.mu.Unlock()
+	}()
 
 	serverConfig := StdioServerConfig{
 		Name:            config.Name,
@@ -205,16 +223,21 @@ func (p *StdioPool) StartServer(ctx context.Context, config *migrate.ServerConfi
 		return fmt.Errorf("pool: start %s: %w", config.Name, err)
 	}
 
+	p.mu.Lock()
 	p.servers[config.Name] = server
-
 	p.rateLimiters[config.Name] = concurrent.NewRateLimiter(10, time.Second)
 	p.circuitBreakers[config.Name] = concurrent.NewCircuitBreaker(5, 50*time.Second, 10*time.Second)
+	p.mu.Unlock()
 
 	p.logger.Info("server started in pool", "name", config.Name)
 	return nil
 }
 
 func (p *StdioPool) StartAllServers(ctx context.Context, configs []*migrate.ServerConfig) error {
+	// Servers start independently, so spawn them concurrently: boot time is
+	// the slowest spawn instead of the sum of all of them. Failures are
+	// logged per server exactly as in the serial version.
+	var wg sync.WaitGroup
 	for _, cfg := range configs {
 		if cfg.Enabled != nil && !*cfg.Enabled {
 			continue
@@ -222,10 +245,15 @@ func (p *StdioPool) StartAllServers(ctx context.Context, configs []*migrate.Serv
 		if cfg.Transport != registry.TransportStdio {
 			continue
 		}
-		if err := p.StartServer(ctx, cfg); err != nil {
-			p.logger.Warn("failed to start server", "name", cfg.Name, "error", err)
-		}
+		wg.Add(1)
+		go func(cfg *migrate.ServerConfig) {
+			defer wg.Done()
+			if err := p.StartServer(ctx, cfg); err != nil {
+				p.logger.Warn("failed to start server", "name", cfg.Name, "error", err)
+			}
+		}(cfg)
 	}
+	wg.Wait()
 	return nil
 }
 
@@ -318,16 +346,17 @@ func (p *StdioPool) PutRequest(name string, req Request) error {
 		return err
 	}
 
-	if cb, exists := p.circuitBreakers[name]; exists {
-		if cb.State() == concurrent.StateOpen {
-			return fmt.Errorf("pool: circuit breaker open for %s", name)
-		}
+	p.mu.RLock()
+	cb := p.circuitBreakers[name]
+	rl := p.rateLimiters[name]
+	p.mu.RUnlock()
+
+	if cb != nil && cb.State() == concurrent.StateOpen {
+		return fmt.Errorf("pool: circuit breaker open for %s", name)
 	}
 
-	if rl, exists := p.rateLimiters[name]; exists {
-		if !rl.Allow() {
-			return fmt.Errorf("pool: rate limit exceeded for %s", name)
-		}
+	if rl != nil && !rl.Allow() {
+		return fmt.Errorf("pool: rate limit exceeded for %s", name)
 	}
 
 	if !server.canAcceptRequest() {

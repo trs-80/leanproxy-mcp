@@ -38,7 +38,12 @@ func TestStdioPipeConnectivity(t *testing.T) {
 	// Allow goroutines to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Write a JSON-RPC initialize request to stdin
+	// Register a waiter for id 1, then write a JSON-RPC initialize request
+	// to stdin directly to prove pipe connectivity end to end.
+	respCh := make(chan Response, 1)
+	server.pendingMu.Lock()
+	server.pending[1] = respCh
+	server.pendingMu.Unlock()
 	reqJSON := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}`
 	_, err = fmt.Fprintln(server.stdin, reqJSON)
 	if err != nil {
@@ -47,7 +52,7 @@ func TestStdioPipeConnectivity(t *testing.T) {
 
 	// Wait for the echo response on stdout
 	select {
-	case resp := <-server.responseCh:
+	case resp := <-respCh:
 		if resp.Result == nil {
 			t.Error("expected non-nil result")
 		}

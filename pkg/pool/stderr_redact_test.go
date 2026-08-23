@@ -82,9 +82,13 @@ func TestReadResponses_DebugLogOmitsStdoutLine(t *testing.T) {
 		t.Fatalf("spawn: %v", err)
 	}
 	defer srv.stop()
+	respCh := make(chan Response, 1)
+	srv.pendingMu.Lock()
+	srv.pending[1] = respCh
+	srv.pendingMu.Unlock()
 	fmt.Fprintln(srv.stdin, `{"jsonrpc":"2.0","id":1,"result":{"t":"AKIAIOSFODNN7EXAMPLE"}}`)
 	select {
-	case <-srv.responseCh:
+	case <-respCh:
 	case <-time.After(3 * time.Second):
 		t.Fatal("no response")
 	}

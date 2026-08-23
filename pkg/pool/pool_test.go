@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -897,10 +899,27 @@ func TestHelperProcess(t *testing.T) {
 			"result":  result,
 		}
 		data, _ := json.Marshal(resp)
+		if ms := os.Getenv("GO_HELPER_DELAY_MS"); ms != "" {
+			// Answer concurrently after a delay so tests can prove the pool
+			// overlaps in-flight requests instead of serializing them.
+			d, _ := strconv.Atoi(ms)
+			go func(data []byte) {
+				time.Sleep(time.Duration(d) * time.Millisecond)
+				stdoutMu.Lock()
+				os.Stdout.Write(append(data, '\n'))
+				stdoutMu.Unlock()
+			}(data)
+			continue
+		}
 		os.Stdout.Write(append(data, '\n'))
 	}
+	// Give any delayed responders time to flush before exiting.
+	time.Sleep(500 * time.Millisecond)
 	os.Exit(0)
 }
+
+// stdoutMu serializes helper-process stdout writes from delayed responders.
+var stdoutMu sync.Mutex
 
 func fakeMCPConfig(name string) *migrate.ServerConfig {
 	return &migrate.ServerConfig{
