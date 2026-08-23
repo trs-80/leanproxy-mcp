@@ -571,7 +571,8 @@ func handleSingleRequest(ctx context.Context, line []byte, writer *bufio.Writer,
 
 	resp, err := p.SendRequest(ctx, server.ID, req, timeout)
 	if err != nil {
-		writeError(writer, errors.ErrCodeInternalError, err.Error())
+		msg, _ := upstreamErrorResponse(server.ID, req.Method, err)
+		writeError(writer, errors.ErrCodeInternalError, msg)
 		return
 	}
 
@@ -625,7 +626,8 @@ func handleSingleRequestAsync(ctx context.Context, line []byte, writer *bufio.Wr
 
 	resp, err := p.SendRequest(ctx, server.ID, req, timeout)
 	if err != nil {
-		writeErrorAsync(writer, writerMu, errors.ErrCodeInternalError, err.Error())
+		msg, _ := upstreamErrorResponse(server.ID, req.Method, err)
+		writeErrorAsync(writer, writerMu, errors.ErrCodeInternalError, msg)
 		return
 	}
 
@@ -695,9 +697,10 @@ func handleBatchRequest(ctx context.Context, line []byte, writer *bufio.Writer, 
 
 		resp, err := p.SendRequest(ctx, server.ID, req, timeout)
 		if err != nil {
+			msg, _ := upstreamErrorResponse(server.ID, req.Method, err)
 			responses = append(responses, &proxy.JSONRPCResponse{
 				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, err.Error()),
+				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, msg),
 				ID:      req.ID,
 			})
 			continue
@@ -739,9 +742,10 @@ func handleGatewayToolSync(ctx context.Context, req *proxy.JSONRPCRequest, gt ga
 	case "list_servers":
 		servers, listErr := gt.ListServers(ctx)
 		if listErr != nil {
+			msg, _ := upstreamErrorResponse("gateway", req.Method, listErr)
 			return &proxy.JSONRPCResponse{
 				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, listErr.Error()),
+				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, msg),
 				ID:      req.ID,
 			}
 		}
@@ -779,9 +783,10 @@ func handleGatewayToolSync(ctx context.Context, req *proxy.JSONRPCRequest, gt ga
 					ID:      req.ID,
 				}
 			}
+			msg, _ := upstreamErrorResponse(params.ServerName, req.Method, invokeErr)
 			return &proxy.JSONRPCResponse{
 				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, invokeErr.Error()),
+				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, msg),
 				ID:      req.ID,
 			}
 		}
@@ -1163,9 +1168,10 @@ func handleBatchRequestAsync(ctx context.Context, line []byte, writer *bufio.Wri
 
 		resp, err := p.SendRequest(ctx, server.ID, req, timeout)
 		if err != nil {
+			msg, _ := upstreamErrorResponse(server.ID, req.Method, err)
 			responses = append(responses, &proxy.JSONRPCResponse{
 				JSONRPC: "2.0",
-				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, err.Error()),
+				Error:   errors.NewJSONRPCError(errors.ErrCodeInternalError, msg),
 				ID:      req.ID,
 			})
 			continue

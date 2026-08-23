@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
 	errs "github.com/mmornati/leanproxy-mcp/pkg/errors"
 )
 
@@ -59,6 +60,13 @@ type ServerStats struct {
 	LastError      string
 	LastErrorAt    time.Time
 }
+
+const (
+	// maxStderrLineBytes bounds a single child stderr line kept for
+	// diagnostics; longer lines are truncated before redaction and logging.
+	maxStderrLineBytes    = 4 * 1024
+	stderrTruncatedMarker = "...[truncated]"
+)
 
 // stderrRing captures the most recent stderr lines for diagnostics.
 type stderrRing struct {
@@ -649,8 +657,16 @@ func (s *StdioServerV2) readStderr(stderr io.Reader, stopCh chan struct{}) {
 
 				line := scanner.Bytes()
 				if len(line) > 0 {
-					s.stderrLines.add(string(line))
-					s.logger.Info("server stderr", "name", s.name, "output", string(line))
+					// Child stderr routinely carries env dumps, DSNs and
+					// tokens: truncate and redact before it reaches the log
+					// or the diagnostic ring (which is surfaced in errors).
+					text := string(line)
+					if len(text) > maxStderrLineBytes {
+						text = text[:maxStderrLineBytes] + stderrTruncatedMarker
+					}
+					text = bouncer.RedactSecrets(text)
+					s.stderrLines.add(text)
+					s.logger.Debug("server stderr", "name", s.name, "output", text)
 				}
 			} else {
 				return
@@ -847,7 +863,7 @@ func (s *StdioServerV2) sendRequest(ctx context.Context, req Request, stopCh cha
 		return nil, fmt.Errorf("pool: marshal request: %w", err)
 	}
 
-	s.logger.Debug("sending request to server", "name", s.name, "method", req.Method, "id", wireID, "encoded", string(encoded))
+	s.logger.Debug("sending request to server", "name", s.name, "method", req.Method, "id", wireID, "params_len", len(req.Params))
 
 	s.mu.Lock()
 	if s.stdin == nil {
@@ -857,7 +873,7 @@ func (s *StdioServerV2) sendRequest(ctx context.Context, req Request, stopCh cha
 	stdin := s.stdin
 	s.mu.Unlock()
 
-	s.logger.Debug("writing to stdin", "name", s.name, "data", string(encoded))
+	s.logger.Debug("writing to stdin", "name", s.name, "method", req.Method, "id", wireID, "len", len(encoded))
 	if _, err := fmt.Fprintln(stdin, string(encoded)); err != nil {
 		return nil, fmt.Errorf("pool: write stdin: %w", err)
 	}
