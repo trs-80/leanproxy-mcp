@@ -151,6 +151,9 @@ func TestRestartServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First Start() failed: %v", err)
 	}
+	// Kill the (restarted) child on exit: a leaked `sleep 10` holds the test
+	// binary's output pipe open and `go test` waits the full 10s for it.
+	t.Cleanup(func() { _ = manager.Kill(context.Background(), config.ID) })
 
 	err = manager.Restart(context.Background(), config.ID)
 	if err != nil {

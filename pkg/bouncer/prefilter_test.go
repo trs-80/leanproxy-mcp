@@ -107,6 +107,30 @@ func BenchmarkRedactJSONCleanLarge(b *testing.B) {
 	}
 }
 
+// BenchmarkRedactJSONEscapedLarge measures the realistic worst case: a large
+// clean payload whose strings contain backslash escapes (code, paths,
+// embedded JSON). canSkipJSON rejects any payload containing '\\', so this
+// takes the full decode -> walk -> re-encode path even with zero secrets.
+func BenchmarkRedactJSONEscapedLarge(b *testing.B) {
+	var args []map[string]interface{}
+	for i := 0; i < 200; i++ {
+		args = append(args, map[string]interface{}{
+			"path":    "C:\\Users\\dev\\project\\file.go",
+			"content": strings.Repeat("line of code\n\twith tabs and \"quotes\"\n", 12),
+			"n":       i,
+		})
+	}
+	payload, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": args})
+	setDiscardSlog(b)
+	r := NewRedactor(PatternsToRegexps(BuiltInPatterns))
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = r.RedactJSON(payload)
+	}
+}
+
 func BenchmarkRedactSecretsClean(b *testing.B) {
 	setDiscardSlog(b)
 	in := strings.Repeat("ordinary log line with no secrets in it at all\n", 50)

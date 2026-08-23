@@ -598,7 +598,7 @@ func TestPoolSendRequest(t *testing.T) {
 		Method:   "test",
 		Params:   nil,
 		ID:       1,
-		Timeout:  2 * time.Second,
+		Timeout:  300 * time.Millisecond, // cat never answers; any timeout exercises the path
 		ResultCh: resultCh,
 		ErrorCh:  errorCh,
 	}
@@ -673,7 +673,7 @@ func TestPoolSendRequestToServer(t *testing.T) {
 		Method:   "test",
 		Params:   nil,
 		ID:       1,
-		Timeout:  2 * time.Second,
+		Timeout:  300 * time.Millisecond, // cat never answers; any timeout exercises the path
 		ResultCh: resultCh,
 		ErrorCh:  errorCh,
 	}
@@ -721,7 +721,7 @@ func TestPoolSendRequestToServerWithID(t *testing.T) {
 		Method:   "test",
 		Params:   nil,
 		ID:       42,
-		Timeout:  2 * time.Second,
+		Timeout:  300 * time.Millisecond, // cat never answers; any timeout exercises the path
 		ResultCh: resultCh,
 		ErrorCh:  errorCh,
 	}
@@ -1088,6 +1088,12 @@ func TestHealthCheckerAutoRestartOnPingFailure(t *testing.T) {
 		defer server.mu.Unlock()
 		return server.process.Process.Pid
 	}()
+
+	// Shrink the ping probe so detecting the wedged process takes ~0.3s
+	// instead of the production 5s; the detection logic is unchanged.
+	oldPing := healthPingTimeout
+	healthPingTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { healthPingTimeout = oldPing })
 
 	hc := NewHealthChecker(pool, nil)
 	hc.SetMaxFailures(1)

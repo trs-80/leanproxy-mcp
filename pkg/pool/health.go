@@ -357,12 +357,17 @@ type PingResponse struct {
 	Error   *errors.JSONRPCError `json:"error,omitempty"`
 }
 
+// healthPingTimeout bounds the MCP ping probe the health checker sends to a
+// suspect server. A variable (not a const) only so tests can shorten the
+// probe; production never mutates it.
+var healthPingTimeout = 5 * time.Second
+
 func (hc *HealthChecker) performPingCheck(ctx context.Context, server *StdioServerV2) (bool, float64) {
 	req := Request{
 		Method:  "ping",
 		Params:  nil,
 		ID:      time.Now().UnixNano(),
-		Timeout: 5 * time.Second,
+		Timeout: healthPingTimeout,
 	}
 
 	start := time.Now()
@@ -382,11 +387,11 @@ func (hc *HealthChecker) performPingCheck(ctx context.Context, server *StdioServ
 			return false, latency
 		}
 		return true, latency
-	case <-time.After(7 * time.Second):
-		// The outer timeout deliberately exceeds the request's own 5s
-		// timeout: if we land here, the ping never even got processed (e.g.
-		// it starved behind a long in-flight tool call), which is an
-		// artifact of probing a busy server — not a liveness signal.
+	case <-time.After(healthPingTimeout + 2*time.Second):
+		// The outer timeout deliberately exceeds the request's own timeout:
+		// if we land here, the ping never even got processed (e.g. it
+		// starved behind a long in-flight tool call), which is an artifact
+		// of probing a busy server — not a liveness signal.
 		return false, time.Since(start).Seconds() * 1000
 	case <-ctx.Done():
 		return false, 0

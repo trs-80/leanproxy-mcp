@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAIClient_Distill_Success(t *testing.T) {
@@ -106,6 +107,7 @@ func TestOpenAIClient_Distill_APIError(t *testing.T) {
 		APIKey:   "test-key",
 		Model:    "gpt-4o-mini",
 	}, nil)
+	client.retryBaseDelay = time.Millisecond // exercise retries without real backoff waits
 
 	manifest := RawManifest{Name: "test"}
 
@@ -142,6 +144,7 @@ func TestOpenAIClient_Distill_RetrySucceeds(t *testing.T) {
 		APIKey:   "test-key",
 		Model:    "gpt-4o-mini",
 	}, nil)
+	client.retryBaseDelay = time.Millisecond // exercise retries without real backoff waits
 
 	manifest := RawManifest{Name: "test"}
 

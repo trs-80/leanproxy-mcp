@@ -20,6 +20,10 @@ type OpenAIClient struct {
 	model      string
 	httpClient *http.Client
 	logger     *slog.Logger
+	// retryBaseDelay is the unit of the exponential retry backoff
+	// (attempt n waits 2^n * retryBaseDelay). Tests shrink it; production
+	// always uses the 1s default set in NewOpenAIClient.
+	retryBaseDelay time.Duration
 }
 
 type OpenAIClientConfig struct {
@@ -40,7 +44,8 @@ func NewOpenAIClient(cfg OpenAIClientConfig, logger *slog.Logger) *OpenAIClient 
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
-		logger: logger,
+		logger:         logger,
+		retryBaseDelay: time.Second,
 	}
 }
 
@@ -55,7 +60,7 @@ func (c *OpenAIClient) Distill(ctx context.Context, manifest RawManifest) (*Dist
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			backoff := time.Duration(1<<uint(attempt)) * c.retryBaseDelay
 			c.logger.Debug("retrying LLM request", "attempt", attempt+1, "backoff", backoff)
 
 			select {

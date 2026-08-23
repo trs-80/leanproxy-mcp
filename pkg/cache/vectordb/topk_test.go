@@ -60,6 +60,48 @@ func TestSearchManualTopKOrdering(t *testing.T) {
 	}
 }
 
+// BenchmarkSearchManualRealistic measures the brute-force fallback at a
+// realistic corpus size and embedding dimension (the vec0 fast path cannot
+// load under the pure-Go sqlite driver, so production always runs this).
+func BenchmarkSearchManualRealistic(b *testing.B) {
+	for _, tc := range []struct {
+		rows, dim int
+	}{
+		{1000, 768},
+		{5000, 768},
+		{5000, 1536},
+	} {
+		b.Run(fmt.Sprintf("rows=%d_dim=%d", tc.rows, tc.dim), func(b *testing.B) {
+			store, err := newSQLiteStore(&migrate.SQLiteVectorConfig{Path: ":memory:"}, tc.dim, slog.New(slog.DiscardHandler))
+			if err != nil {
+				b.Fatalf("store: %v", err)
+			}
+			defer store.Close()
+			ctx := context.Background()
+			vec := make([]float32, tc.dim)
+			for i := 0; i < tc.rows; i++ {
+				for j := range vec {
+					vec[j] = float32((i*31+j*17)%97) / 97
+				}
+				if err := store.Upsert(ctx, VectorRecord{ID: fmt.Sprintf("r%d", i), Vector: vec}); err != nil {
+					b.Fatalf("upsert: %v", err)
+				}
+			}
+			query := make([]float32, tc.dim)
+			for j := range query {
+				query[j] = float32(j%97) / 97
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := store.Search(ctx, query, 5); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // TestSearchTopKEdgeCases covers the boundary shapes of the top-k selection:
 // k larger than the record count, k of zero, an empty store, and tie scores.
 func TestSearchTopKEdgeCases(t *testing.T) {

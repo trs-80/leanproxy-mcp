@@ -448,10 +448,12 @@ const (
 	// minRestartBackoff floors the configured backoff so the jitter math can
 	// never panic and a crash loop cannot spin faster than this.
 	minRestartBackoff = 10 * time.Millisecond
-	// stopGracePeriod is how long stopLocked waits for a SIGTERMed process
-	// generation to wind down before escalating to SIGKILL.
-	stopGracePeriod = 5 * time.Second
 )
+
+// stopGracePeriod is how long stopLocked waits for a SIGTERMed process
+// generation to wind down before escalating to SIGKILL. A variable (not a
+// const) only so tests can shorten the wait; production never mutates it.
+var stopGracePeriod = 5 * time.Second
 
 func (s *StdioServerV2) scheduleRestart(ctx context.Context) {
 	currentState := atomic.LoadInt32(&s.state)

@@ -154,8 +154,11 @@ func TestCrashAutoRestartDisabledByMasterSwitch(t *testing.T) {
 	server.mu.Unlock()
 	require.NoError(t, server.process.Process.Kill())
 
-	// Give the (disabled) crash recovery ample time to misfire.
-	time.Sleep(2 * time.Second)
+	// Give the (disabled) crash recovery time to misfire: with the 100ms
+	// RestartBackoff configured above, an (incorrect) respawn attempt would
+	// land ~150-250ms after the crash (backoff + jitter + scheduling), so
+	// 600ms is >2x margin over the latest possible misfire.
+	time.Sleep(600 * time.Millisecond)
 
 	require.Equal(t, StateError, server.getState(),
 		"crashed server must stay in error state when auto-reconnect is disabled")
@@ -176,13 +179,19 @@ func TestStopEscalatesSIGKILLForSIGTERMIgnoringProcess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping process-based test in short mode")
 	}
+	// Shrink the SIGTERM grace period so the escalation path runs in ~0.5s
+	// instead of the production 5s; the behavior under test is unchanged.
+	oldGrace := stopGracePeriod
+	stopGracePeriod = 500 * time.Millisecond
+	t.Cleanup(func() { stopGracePeriod = oldGrace })
+
 	server := newServerV2("test-stubborn", echoServerConfig("test-stubborn", "GO_HELPER_IGNORE_SIGTERM=1"), slog.Default())
 	require.NoError(t, server.spawn(context.Background()))
 
 	// Give the child time to install its SIGTERM handler; a SIGTERM delivered
 	// during process boot would hit the default disposition and kill it,
 	// defeating the purpose of the test.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	start := time.Now()
 	done := make(chan error, 1)
@@ -193,7 +202,7 @@ func TestStopEscalatesSIGKILLForSIGTERMIgnoringProcess(t *testing.T) {
 		t.Fatal("stop wedged: SIGTERM-ignoring process was not escalated to SIGKILL")
 	}
 	elapsed := time.Since(start)
-	require.GreaterOrEqual(t, elapsed, stopGracePeriod-time.Second,
+	require.GreaterOrEqual(t, elapsed, stopGracePeriod-50*time.Millisecond,
 		"stop should have waited out the SIGTERM grace period before escalating, took %v", elapsed)
 	require.Equal(t, StateStopped, server.getState())
 }

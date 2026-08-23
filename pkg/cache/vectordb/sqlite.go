@@ -241,8 +241,19 @@ func (s *sqliteStore) searchManual(ctx context.Context, vector []float32, k int)
 	}
 	defer rows.Close()
 
+	// The query vector's squared norm is loop-invariant: computing it inside
+	// the per-row cosine used to waste a third of the math on every row.
+	var qna float64
+	for _, f := range vector {
+		qna += float64(f) * float64(f)
+	}
+
 	// Keep only the k best rows while scanning: for the default k of 5 a
 	// sorted insert beats sorting (and JSON-decoding metadata for) every row.
+	// Rows are scanned into sql.RawBytes (no database/sql copy) and scored
+	// straight off the blob bytes; id/vector/metadata are only materialized
+	// for the handful of rows that actually enter the top k, which takes the
+	// scan from ~12KB of garbage per row to near-zero.
 	type manualCand struct {
 		id      string
 		vec     []float32
@@ -250,24 +261,36 @@ func (s *sqliteStore) searchManual(ctx context.Context, vector []float32, k int)
 		score   float64
 	}
 	best := make([]manualCand, 0, k)
+	var idB, vecBytes, metaB sql.RawBytes
 	for rows.Next() {
-		var id string
-		var vecBytes []byte
-		var metaStr sql.NullString
-		if err := rows.Scan(&id, &vecBytes, &metaStr); err != nil {
+		if err := rows.Scan(&idB, &vecBytes, &metaB); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
-
-		storedVec := bytesToFloat32Slice(vecBytes)
-		if storedVec == nil {
+		if len(vecBytes)%4 != 0 {
 			continue
 		}
-		score := cosineSimilarity(vector, storedVec)
+
+		// Fused decode + dot/norm pass. Accumulation order matches the old
+		// cosineSimilarity exactly, so scores are bit-identical; a stored
+		// vector of a different dimension scores 0, as before.
+		var score float64
+		if len(vecBytes) == len(vector)*4 && qna != 0 {
+			var dot, nb float64
+			for i := range vector {
+				fb := float64(math.Float32frombits(binary.LittleEndian.Uint32(vecBytes[i*4:])))
+				dot += float64(vector[i]) * fb
+				nb += fb * fb
+			}
+			if nb != 0 {
+				score = dot / (math.Sqrt(qna) * math.Sqrt(nb))
+			}
+		}
 		if len(best) == k && score <= best[k-1].score {
 			continue
 		}
 
 		// Insert in descending-score order, dropping the current worst.
+		// Materialize copies now: RawBytes memory is reused on the next Scan.
 		pos := len(best)
 		for pos > 0 && best[pos-1].score < score {
 			pos--
@@ -276,7 +299,7 @@ func (s *sqliteStore) searchManual(ctx context.Context, vector []float32, k int)
 			best = append(best, manualCand{})
 		}
 		copy(best[pos+1:], best[pos:len(best)-1])
-		best[pos] = manualCand{id: id, vec: storedVec, metaStr: metaStr.String, score: score}
+		best[pos] = manualCand{id: string(idB), vec: bytesToFloat32Slice(vecBytes), metaStr: string(metaB), score: score}
 	}
 
 	if err := rows.Err(); err != nil {
