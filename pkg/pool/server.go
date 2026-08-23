@@ -609,7 +609,9 @@ func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
 				}
 
 				line := scanner.Bytes()
-				s.logger.Debug("read from server stdout", "name", s.name, "line", string(line))
+				// Never log the raw line: tool results routinely carry secrets. Length
+				// is enough for diagnostics; the redacted payload is visible to the client.
+				s.logger.Debug("read from server stdout", "name", s.name, "line_len", len(line))
 
 				var msg map[string]json.RawMessage
 				if err := json.Unmarshal(line, &msg); err != nil {
