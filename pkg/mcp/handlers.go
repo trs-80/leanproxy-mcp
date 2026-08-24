@@ -320,7 +320,10 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 		empty := len(h.toolCache.tools) == 0
 		h.toolCache.mu.RUnlock()
 		if empty {
-			h.refreshToolCacheFromServers(ctx)
+			// Go through the persistent store first: a slow upstream start
+			// (codebase-memory was measured >10s) must not leave the client
+			// with an empty tool list for the whole session.
+			h.PopulateToolCache(ctx)
 		}
 
 		// Sorted output: identical caches must render identically across
