@@ -108,7 +108,7 @@ func TestTokenEconomy_TruncationCapsResultTokens(t *testing.T) {
 	huge, _ := json.Marshal(map[string]interface{}{
 		"content": []map[string]string{{"type": "text", "text": strings.Repeat("data ", 20000)}}, // ~100KB
 	})
-	capped := truncateToolResult(huge, 2000)
+	capped := truncateToolResult(huge, 2000, true)
 
 	hugeTok := est.EstimateTokens(string(huge))
 	cappedTok := est.EstimateTokens(string(capped))

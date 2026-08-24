@@ -380,6 +380,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	handler := mcp.NewHandlerWithToolStore(unifiedPool, slog.Default(), toolStore)
+	applyServerToolConfig(handler, loadedCfg)
 
 	cacheCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()

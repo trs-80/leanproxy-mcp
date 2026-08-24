@@ -173,7 +173,7 @@ func TestInvokeTool_DefaultCapFromConfig(t *testing.T) {
 
 func TestTruncateToolResult_PassThroughUnparseable(t *testing.T) {
 	raw := json.RawMessage(`{"custom":"shape","not":"content-blocks"}`)
-	if got := truncateToolResult(raw, 5); string(got) != string(raw) {
+	if got := truncateToolResult(raw, 5, true); string(got) != string(raw) {
 		t.Errorf("unparseable result must pass through untouched, got %s", got)
 	}
 }

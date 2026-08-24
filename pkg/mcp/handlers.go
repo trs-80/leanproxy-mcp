@@ -1,15 +1,18 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mmornati/leanproxy-mcp/pkg/errors"
 	"github.com/mmornati/leanproxy-mcp/pkg/pool"
@@ -115,23 +118,115 @@ func (h *Handler) responseCapFor(serverName, toolName string, explicit int) int 
 	return h.defaultMaxResponseChars
 }
 
-// filterTools applies the server's include/exclude lists.
+// filterTools applies the server's include/exclude lists via the same
+// toolExposed predicate that gates dispatch, so discovery and dispatch can
+// never diverge.
 func (h *Handler) filterTools(serverName string, tools []Tool) []Tool {
-	f, ok := h.toolFilters[serverName]
-	if !ok || (f.include == nil && f.exclude == nil) {
+	if _, ok := h.toolFilters[serverName]; !ok {
 		return tools
 	}
 	kept := make([]Tool, 0, len(tools))
 	for _, t := range tools {
-		if f.include != nil && !f.include[t.Name] {
-			continue
+		if h.toolExposed(serverName, t.Name) {
+			kept = append(kept, t)
 		}
-		if f.exclude[t.Name] {
-			continue
-		}
-		kept = append(kept, t)
 	}
 	return kept
+}
+
+// gateDispatch is the single policy choke point every dispatch surface
+// (tools/call, invoke_tool, get_tool_schema, and any future executor) must
+// pass. It returns a ready error response for a filtered-out tool, with
+// close matches from the exposed set so a typo'd name on an include-list
+// server reads as "did you mean", not as a policy block.
+func (h *Handler) gateDispatch(reqID interface{}, serverName, toolName string) *Response {
+	if h.toolExposed(serverName, toolName) {
+		return nil
+	}
+	msg := fmt.Sprintf("tool %s is not exposed on server %s (tools filter in leanproxy config)", toolName, serverName)
+	if s := h.suggestTools(serverName, toolName, 3); s != "" {
+		msg += s
+	}
+	return &Response{
+		JSONRPC: JSONRPCVersion,
+		Error:   NewError(ErrCodeInvalidParams, msg),
+		ID:      reqID,
+	}
+}
+
+// maxExplicitCap bounds explicit caps before float64->int conversion:
+// int(huge float64) is implementation-defined (MinInt64 on amd64, which
+// responseCapFor would read as "no explicit value", silently re-applying
+// the configured cap in a retry loop).
+const maxExplicitCap = math.MaxInt32
+
+// parseCapValue reads a positive cap from a JSON number or a numeric string
+// ("2000" is a common model slip), clamped to maxExplicitCap. 0 means
+// absent or unusable.
+func parseCapValue(raw json.RawMessage) int {
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err != nil {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0
+		}
+		n = json.Number(strings.TrimSpace(s))
+	}
+	f, err := n.Float64()
+	if err != nil || f <= 0 {
+		return 0
+	}
+	if f >= maxExplicitCap {
+		return maxExplicitCap
+	}
+	return int(f)
+}
+
+// upstreamDeclaresParam reports whether the cached schema for server/tool
+// declares the property, meaning the parameter belongs to the tool itself
+// and must not be consumed by the proxy.
+func (h *Handler) upstreamDeclaresParam(serverName, toolName, param string) bool {
+	schema := h.lookupToolSchema(serverName, toolName)
+	if schema == nil {
+		return false
+	}
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil {
+		return false
+	}
+	_, ok := s.Properties[param]
+	return ok
+}
+
+// extractResponseCap pops max_response_chars out of a tool-argument object.
+// Sibling arguments keep their exact bytes (map[string]json.RawMessage —
+// round-tripping through interface{} turned 64-bit IDs into float64 and
+// corrupted them). The key passes through untouched when the upstream tool
+// legitimately declares it. The bytes.Contains guard keeps the common case
+// (no cap argument) free of a full JSON parse on the hot path.
+func (h *Handler) extractResponseCap(serverName, toolName string, arguments json.RawMessage) (json.RawMessage, int) {
+	if len(arguments) == 0 || !bytes.Contains(arguments, []byte(`"max_response_chars"`)) {
+		return arguments, 0
+	}
+	if h.upstreamDeclaresParam(serverName, toolName, "max_response_chars") {
+		return arguments, 0
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(arguments, &m); err != nil {
+		return arguments, 0
+	}
+	raw, ok := m["max_response_chars"]
+	if !ok {
+		return arguments, 0
+	}
+	capVal := parseCapValue(raw)
+	delete(m, "max_response_chars")
+	if b, err := json.Marshal(m); err == nil {
+		arguments = b
+	}
+	return arguments, capVal
 }
 
 // toolExposed reports whether the server's include/exclude filter leaves the
@@ -480,32 +575,15 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 		}, nil
 	}
 
-	if !h.toolExposed(serverName, toolName) {
-		return &Response{
-			JSONRPC: JSONRPCVersion,
-			Error:   NewError(ErrCodeInvalidParams, fmt.Sprintf("tool %s is not exposed on server %s (tools filter in leanproxy config)", toolName, serverName)),
-			ID:      req.ID,
-		}, nil
+	if resp := h.gateDispatch(req.ID, serverName, toolName); resp != nil {
+		return resp, nil
 	}
 
 	// The truncation marker tells the model to adjust max_response_chars, so
-	// this path must honor it too — and strip it before forwarding, since the
-	// upstream tool's schema does not know the parameter.
-	explicitCap := 0
-	if len(params.Arguments) > 0 {
-		var argMap map[string]interface{}
-		if err := json.Unmarshal(params.Arguments, &argMap); err == nil {
-			if m, ok := argMap["max_response_chars"].(float64); ok {
-				if m > 0 {
-					explicitCap = int(m)
-				}
-				delete(argMap, "max_response_chars")
-				if b, err := json.Marshal(argMap); err == nil {
-					params.Arguments = b
-				}
-			}
-		}
-	}
+	// this path must honor it too — and strip it before forwarding, unless
+	// the upstream tool declares the parameter itself.
+	var explicitCap int
+	params.Arguments, explicitCap = h.extractResponseCap(serverName, toolName, params.Arguments)
 
 	// Perform MCP initialize handshake if not yet done for this server instance.
 	if !h.pool.IsServerMCPInitialized(serverName) {
@@ -540,8 +618,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 	}
 
 	result := resp.Result
-	if cap := h.responseCapFor(serverName, toolName, explicitCap); cap > 0 {
-		result = truncateToolResult(result, cap)
+	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
+		result = truncateToolResult(result, capVal, explicitCap > 0)
 	}
 
 	return &Response{
@@ -1042,23 +1120,21 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	explicitCap := 0
 
 	if params.Arguments != nil {
-		var args map[string]interface{}
+		// Decoded as raw messages: nested tool arguments must keep their
+		// exact bytes (an interface{} round trip turns 64-bit IDs into
+		// float64 and corrupts them).
+		var args map[string]json.RawMessage
 		if err := json.Unmarshal(params.Arguments, &args); err == nil {
-			args = ApplyDefaults("invoke_tool", args)
-			if s, ok := args["server"].(string); ok {
-				serverName = s
-			}
-			if t, ok := args["tool"].(string); ok {
-				toolName = t
-			}
-			if a, ok := args["arguments"].(map[string]interface{}); ok {
-				arguments, err = json.Marshal(a)
-				if err != nil {
-					h.logger.Warn("failed to marshal arguments", "error", err)
+			_ = json.Unmarshal(args["server"], &serverName)
+			_ = json.Unmarshal(args["tool"], &toolName)
+			if a, ok := args["arguments"]; ok {
+				var probe map[string]json.RawMessage
+				if json.Unmarshal(a, &probe) == nil {
+					arguments = a
 				}
 			}
-			if m, ok := args["max_response_chars"].(float64); ok && m > 0 {
-				explicitCap = int(m)
+			if m, ok := args["max_response_chars"]; ok {
+				explicitCap = parseCapValue(m)
 			}
 		}
 	}
@@ -1071,16 +1147,25 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 		}, nil
 	}
 
-	if strings.HasPrefix(toolName, serverName+"_") {
+	// Trim the stub prefix only when the raw name is not itself a known
+	// upstream tool: real servers exist whose tool names literally start
+	// with "<server>_" (brave_web_search on server brave), and trimming
+	// those broke both the filter gate and dispatch.
+	if strings.HasPrefix(toolName, serverName+"_") && h.lookupToolSchema(serverName, toolName) == nil {
 		toolName = strings.TrimPrefix(toolName, serverName+"_")
 	}
 
-	if !h.toolExposed(serverName, toolName) {
-		return &Response{
-			JSONRPC: JSONRPCVersion,
-			Error:   NewError(ErrCodeInvalidParams, fmt.Sprintf("tool %s is not exposed on server %s (tools filter in leanproxy config)", toolName, serverName)),
-			ID:      req.ID,
-		}, nil
+	if resp := h.gateDispatch(req.ID, serverName, toolName); resp != nil {
+		return resp, nil
+	}
+
+	// A cap nested inside the tool arguments is a natural model slip (the
+	// marker never says where the parameter goes); honor and strip it the
+	// same way the direct path does. The top-level parameter wins.
+	var nestedCap int
+	arguments, nestedCap = h.extractResponseCap(serverName, toolName, arguments)
+	if explicitCap == 0 {
+		explicitCap = nestedCap
 	}
 
 	h.logger.Info("invoke_tool called", "server", serverName, "tool", toolName)
@@ -1178,8 +1263,8 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	}
 
 	result := resp.Result
-	if cap := h.responseCapFor(serverName, toolName, explicitCap); cap > 0 {
-		result = truncateToolResult(result, cap)
+	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
+		result = truncateToolResult(result, capVal, explicitCap > 0)
 	}
 
 	return &Response{
@@ -1239,6 +1324,14 @@ func (h *Handler) handleGetToolSchema(ctx context.Context, req *Request) (*Respo
 			Error:   NewError(ErrCodeInvalidParams, err.Error()),
 			ID:      req.ID,
 		}, nil
+	}
+
+	// The cache-miss path reads the raw upstream tools/list, which the
+	// include/exclude filter never touched — gate it like every other
+	// dispatch surface or a denylisted tool's full schema stays
+	// discoverable by guessing its name.
+	if resp := h.gateDispatch(req.ID, serverName, toolName); resp != nil {
+		return resp, nil
 	}
 
 	if err := h.initializeServer(ctx, serverName); err != nil {
@@ -1540,7 +1633,7 @@ func (h *Handler) SetDefaultMaxResponseChars(n int) {
 // through untouched (never corrupt what we do not understand). A marker noting
 // the cut is appended so the model knows the output is partial and how to get
 // the rest.
-func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
+func truncateToolResult(raw json.RawMessage, maxChars int, explicitCap bool) json.RawMessage {
 	// The envelope is kept as raw fields so truncation never drops top-level
 	// members it does not model (structuredContent, _meta, ...): rebuilding
 	// only {content, isError} silently violated the result schema for tools
@@ -1549,58 +1642,101 @@ func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return raw
 	}
+	contentKey := "content"
+	if _, ok := envelope[contentKey]; !ok {
+		// The spec mandates lowercase, but a nonconforming "Content" must
+		// degrade to a pass-through of the cap, not a bypass of it (the old
+		// struct-tag decode matched case-insensitively).
+		for k := range envelope {
+			if strings.EqualFold(k, "content") {
+				contentKey = k
+				break
+			}
+		}
+	}
 	var blocks []map[string]interface{}
-	if err := json.Unmarshal(envelope["content"], &blocks); err != nil || len(blocks) == 0 {
+	if err := json.Unmarshal(envelope[contentKey], &blocks); err != nil || len(blocks) == 0 {
 		return raw
 	}
-	result := struct{ Content []map[string]interface{} }{Content: blocks}
 
 	total := 0
-	for _, block := range result.Content {
+	for _, block := range blocks {
 		if text, ok := block["text"].(string); ok {
 			total += len(text)
 		}
 	}
+	// structuredContent counts against the cap too: it is the machine copy
+	// of the same result, and leaving it unbounded made the cap a no-op for
+	// exactly the outputSchema tools the envelope rewrite preserved it for.
+	structuredLen := len(envelope["structuredContent"])
+
 	// Truncating only pays when it saves more than the marker costs.
-	if total <= maxChars+truncationMarkerSlack {
+	textOver := total > maxChars+truncationMarkerSlack
+	structuredOver := structuredLen > maxChars+truncationMarkerSlack
+	if !textOver && !structuredOver {
 		return raw
 	}
 
-	budget := maxChars
-	kept := make([]map[string]interface{}, 0, len(result.Content))
-	for _, block := range result.Content {
-		text, ok := block["text"].(string)
-		if !ok {
-			// Non-text blocks (images, resources) are never truncated and must
-			// survive even after the text budget is spent.
-			kept = append(kept, block)
-			continue
-		}
-		if budget <= 0 {
-			continue
-		}
-		if len(text) > budget {
-			nb := make(map[string]interface{}, len(block))
-			for k, v := range block {
-				nb[k] = v
+	kept := make([]map[string]interface{}, 0, len(blocks))
+	if textOver {
+		budget := maxChars
+		for _, block := range blocks {
+			text, ok := block["text"].(string)
+			if !ok {
+				// Non-text blocks (images, resources) are never truncated and
+				// must survive even after the text budget is spent.
+				kept = append(kept, block)
+				continue
 			}
-			nb["text"] = text[:budget]
-			kept = append(kept, nb)
-			budget = 0
-			continue
+			if budget <= 0 {
+				continue
+			}
+			if len(text) > budget {
+				cut := budget
+				// Back up to a rune boundary: a mid-rune byte cut marshals
+				// as U+FFFD mojibake right where the model reads the marker.
+				for cut > 0 && !utf8.RuneStart(text[cut]) {
+					cut--
+				}
+				nb := make(map[string]interface{}, len(block))
+				for k, v := range block {
+					nb[k] = v
+				}
+				nb["text"] = text[:cut]
+				kept = append(kept, nb)
+				budget = 0
+				continue
+			}
+			budget -= len(text)
+			kept = append(kept, block)
 		}
-		budget -= len(text)
-		kept = append(kept, block)
+	} else {
+		kept = append(kept, blocks...)
 	}
 
-	marker := fmt.Sprintf("\n[leanproxy: truncated, %d of %d chars shown; raise or omit max_response_chars for more]", maxChars, total)
+	var notes []string
+	if textOver {
+		notes = append(notes, fmt.Sprintf("truncated, %d of %d chars shown", maxChars, total))
+	}
+	if structuredOver {
+		delete(envelope, "structuredContent")
+		notes = append(notes, fmt.Sprintf("structuredContent (%d chars) omitted", structuredLen))
+	}
+	// Advice the model can actually follow: an explicit argument can be
+	// raised; a config cap is overridden by passing the argument. "omit"
+	// was a guaranteed no-op for config caps (re-resolves to the same cap).
+	advice := "pass max_response_chars for more"
+	if explicitCap {
+		advice = "raise max_response_chars for more"
+	}
+	marker := fmt.Sprintf("\n[leanproxy: %s; %s]", strings.Join(notes, "; "), advice)
 	kept = append(kept, map[string]interface{}{"type": "text", "text": marker})
 
 	newContent, err := json.Marshal(kept)
 	if err != nil {
 		return raw
 	}
-	envelope["content"] = newContent
+	envelope[contentKey] = newContent
 	trimmed, err := json.Marshal(envelope)
 	if err != nil {
 		return raw

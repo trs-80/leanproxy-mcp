@@ -479,19 +479,7 @@ func runServerRun(cmd *cobra.Command, args []string) error {
 	if runFlags.lazyTools {
 		handler.EnableLazyLoading(30 * time.Minute)
 	}
-	for _, srv := range cfg.Servers {
-		if srv.TimeoutValue > 0 {
-			handler.SetTimeout(srv.Name, srv.TimeoutValue)
-		}
-		if srv.Tools != nil {
-			if len(srv.Tools.Include) > 0 || len(srv.Tools.Exclude) > 0 {
-				handler.SetToolFilter(srv.Name, srv.Tools.Include, srv.Tools.Exclude)
-			}
-			for tool, n := range srv.Tools.MaxResponseChars {
-				handler.SetToolMaxResponseChars(srv.Name, tool, n)
-			}
-		}
-	}
+	applyServerToolConfig(handler, cfg)
 
 	// Same redactor `serve` uses; this entrypoint previously forwarded
 	// everything in both directions without any redaction.
@@ -906,4 +894,29 @@ func runServerHealth(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// applyServerToolConfig wires servers[].timeout and servers[].tools.*
+// (include/exclude filters, per-tool response caps) into the handler. Every
+// entrypoint that builds an mcp.Handler from a config must call it before
+// populating the tool cache — the serve entrypoint previously skipped it,
+// silently ignoring the whole tools.* block.
+func applyServerToolConfig(handler *mcp.Handler, cfg *migrate.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, srv := range cfg.Servers {
+		if srv.TimeoutValue > 0 {
+			handler.SetTimeout(srv.Name, srv.TimeoutValue)
+		}
+		if srv.Tools == nil {
+			continue
+		}
+		if len(srv.Tools.Include) > 0 || len(srv.Tools.Exclude) > 0 {
+			handler.SetToolFilter(srv.Name, srv.Tools.Include, srv.Tools.Exclude)
+		}
+		for tool, n := range srv.Tools.MaxResponseChars {
+			handler.SetToolMaxResponseChars(srv.Name, tool, n)
+		}
+	}
 }

@@ -207,10 +207,10 @@ func TestTruncateToolResult_SkipsWhenSavingsBelowMarker(t *testing.T) {
 	raw, _ := json.Marshal(map[string]interface{}{
 		"content": []map[string]string{{"type": "text", "text": strings.Repeat("x", 1050)}},
 	})
-	if out := truncateToolResult(raw, 1000); string(out) != string(raw) {
+	if out := truncateToolResult(raw, 1000, true); string(out) != string(raw) {
 		t.Errorf("truncated a result only 50 chars over the cap (marker would cost more)")
 	}
-	if out := truncateToolResult(raw, 500); string(out) == string(raw) {
+	if out := truncateToolResult(raw, 500, true); string(out) == string(raw) {
 		t.Errorf("expected truncation when well over cap")
 	}
 }
@@ -223,7 +223,7 @@ func TestTruncateToolResult_KeepsTrailingNonTextBlocks(t *testing.T) {
 			{"type": "image", "data": "xyz", "mimeType": "image/png"},
 		},
 	})
-	out := truncateToolResult(raw, 500)
+	out := truncateToolResult(raw, 500, true)
 	var result struct {
 		Content []map[string]interface{} `json:"content"`
 	}
@@ -251,7 +251,7 @@ func TestTruncateToolResult_PreservesTopLevelFields(t *testing.T) {
 		"_meta":             map[string]interface{}{"trace": "abc"},
 		"isError":           false,
 	})
-	out := truncateToolResult(raw, 500)
+	out := truncateToolResult(raw, 500, true)
 	var result map[string]json.RawMessage
 	if err := json.Unmarshal(out, &result); err != nil {
 		t.Fatal(err)
@@ -347,5 +347,270 @@ func TestToolsCallLazy_HonorsAndStripsMaxResponseChars(t *testing.T) {
 	}
 	if !strings.Contains(upstreamArgs, "project") {
 		t.Errorf("real arguments lost: %s", upstreamArgs)
+	}
+}
+
+func capturePool(t *testing.T, server string) (*mockPool, *string) {
+	t.Helper()
+	var upstreamParams string
+	mp := newMockPool()
+	mp.servers[server] = "idle"
+	mp.sendRequestFunc = func(ctx context.Context, name, method string, params json.RawMessage, timeout time.Duration) (*pool.Response, error) {
+		if method == MethodToolsCall {
+			upstreamParams = string(params)
+		}
+		res, _ := json.Marshal(map[string]interface{}{"content": []map[string]string{{"type": "text", "text": strings.Repeat("x", 5000)}}})
+		return &pool.Response{Result: res}, nil
+	}
+	return mp, &upstreamParams
+}
+
+// Sibling arguments must keep their exact bytes when max_response_chars is
+// stripped: an interface{} round trip turns 64-bit IDs into float64 and
+// silently corrupts them (1234567890123456789 -> ...800).
+func TestExtractResponseCap_PreservesBigIntSiblings(t *testing.T) {
+	mp, upstream := capturePool(t, "gh")
+	h := NewHandler(mp, nil)
+	h.pool.MarkServerMCPInitialized("gh")
+
+	const bigID = "1234567890123456789"
+	args := json.RawMessage(`{"name":"gh_get_item","arguments":{"id":` + bigID + `,"max_response_chars":600}}`)
+	resp, err := h.handleToolsCall(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1"), Params: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(*upstream, bigID) {
+		t.Errorf("64-bit ID corrupted or lost in forwarded arguments: %s", *upstream)
+	}
+	if strings.Contains(*upstream, "max_response_chars") {
+		t.Errorf("cap argument leaked upstream: %s", *upstream)
+	}
+	if !strings.Contains(resultText(t, resp), "truncated, 600 of 5000") {
+		t.Error("explicit cap not honored")
+	}
+
+	// invoke_tool nested arguments take the same path.
+	*upstream = ""
+	resp = callGatewayTool(t, h, "invoke_tool", map[string]interface{}{
+		"server": "gh", "tool": "get_item",
+		"arguments": map[string]interface{}{"note": "n"},
+	})
+	if resp.Error != nil {
+		t.Fatalf("invoke_tool failed: %v", resp.Error)
+	}
+}
+
+// invoke_tool must not corrupt big ints in nested arguments either.
+func TestInvokeTool_PreservesBigIntArguments(t *testing.T) {
+	mp, upstream := capturePool(t, "gh")
+	h := NewHandler(mp, nil)
+	h.pool.MarkServerMCPInitialized("gh")
+
+	const bigID = "9007199254740993" // 2^53+1: first integer float64 cannot hold
+	args, _ := json.Marshal(map[string]interface{}{"server": "gh", "tool": "get_item"})
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal(args, &m)
+	m["arguments"] = json.RawMessage(`{"id":` + bigID + `,"max_response_chars":"700"}`)
+	full, _ := json.Marshal(m)
+	resp, err := h.handleLeanproxyTool(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1")}, ToolsCallParams{Name: "invoke_tool", Arguments: full})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(*upstream, bigID) {
+		t.Errorf("big int corrupted in invoke_tool arguments: %s", *upstream)
+	}
+	if strings.Contains(*upstream, "max_response_chars") {
+		t.Errorf("nested cap argument leaked upstream: %s", *upstream)
+	}
+	// String-typed "700" (common model slip) must be honored, not ignored.
+	if !strings.Contains(resultText(t, resp), "truncated, 700 of 5000") {
+		t.Errorf("string-typed nested cap not honored: %.140s", resultText(t, resp))
+	}
+}
+
+// A huge cap must clamp to a large positive value, never go negative via
+// implementation-defined float->int conversion (MinInt64 on amd64).
+func TestParseCapValue_ClampsAndParses(t *testing.T) {
+	cases := map[string]int{
+		`9223372036854775807`: maxExplicitCap,
+		`1e300`:               maxExplicitCap,
+		`2000`:                2000,
+		`"2000"`:              2000,
+		`" 2000 "`:            2000,
+		`-5`:                  0,
+		`"abc"`:               0,
+		`true`:                0,
+	}
+	for in, want := range cases {
+		if got := parseCapValue(json.RawMessage(in)); got != want {
+			t.Errorf("parseCapValue(%s) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// An upstream tool that legitimately declares max_response_chars must
+// receive it untouched.
+func TestExtractResponseCap_RespectsUpstreamSchema(t *testing.T) {
+	mp, upstream := capturePool(t, "chain")
+	h := NewHandler(mp, nil)
+	h.pool.MarkServerMCPInitialized("chain")
+	seedToolCache(h, "chain", Tool{
+		Name:        "fetch",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"max_response_chars":{"type":"number"}}}`),
+	})
+
+	args := json.RawMessage(`{"name":"chain_fetch","arguments":{"url":"u","max_response_chars":600}}`)
+	if _, err := h.handleToolsCall(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1"), Params: args}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(*upstream, "max_response_chars") {
+		t.Errorf("tool-owned max_response_chars was stripped: %s", *upstream)
+	}
+}
+
+// get_tool_schema's cache-miss path reads the raw upstream list; it must be
+// gated like every other dispatch surface.
+func TestGetToolSchema_RespectsToolFilter(t *testing.T) {
+	fetches := 0
+	mp := newMockPool()
+	mp.servers["gh"] = "idle"
+	mp.sendRequestFunc = func(ctx context.Context, name, method string, params json.RawMessage, timeout time.Duration) (*pool.Response, error) {
+		if method == MethodToolsList {
+			fetches++
+		}
+		res, _ := json.Marshal(ToolsListResult{Tools: []Tool{{Name: "delete_repo", Description: "secret interface", InputSchema: json.RawMessage(`{"type":"object"}`)}}})
+		return &pool.Response{Result: res}, nil
+	}
+	h := NewHandler(mp, nil)
+	h.EnableLazyLoading(0)
+	h.SetToolFilter("gh", nil, []string{"delete_repo"})
+
+	params, _ := json.Marshal(map[string]string{"name": "gh_delete_repo"})
+	resp, err := h.handleGetToolSchema(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1"), Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "not exposed") {
+		t.Errorf("excluded tool's schema served: %+v", resp)
+	}
+	if fetches != 0 {
+		t.Errorf("gate ran after the upstream fetch (%d fetches)", fetches)
+	}
+}
+
+// A typo'd name on an include-list server must read as "did you mean", not
+// as a bare policy block.
+func TestGate_IncludeListTypoGetsSuggestions(t *testing.T) {
+	h := NewHandler(newMockPool(), nil)
+	h.SetToolFilter("gh", []string{"list_issues", "create_issue"}, nil)
+	h.storeTools("gh", []Tool{{Name: "list_issues", InputSchema: json.RawMessage(`{}`)}, {Name: "create_issue", InputSchema: json.RawMessage(`{}`)}})
+
+	resp := h.gateDispatch(json.RawMessage("1"), "gh", "list_issue")
+	if resp == nil {
+		t.Fatal("typo'd name passed the gate")
+	}
+	if !strings.Contains(resp.Error.Message, "list_issues") {
+		t.Errorf("no close-match suggestion in gate error: %s", resp.Error.Message)
+	}
+}
+
+// Upstream tools literally named "<server>_x" must not be trimmed into a
+// different name, falsely failing the filter and dispatching the wrong tool.
+func TestInvokeTool_LiteralPrefixedNameNotTrimmed(t *testing.T) {
+	mp, upstream := capturePool(t, "brave")
+	h := NewHandler(mp, nil)
+	h.pool.MarkServerMCPInitialized("brave")
+	h.SetToolFilter("brave", []string{"brave_web_search"}, nil)
+	h.storeTools("brave", []Tool{{Name: "brave_web_search", InputSchema: json.RawMessage(`{"type":"object"}`)}})
+
+	resp := callGatewayTool(t, h, "invoke_tool", map[string]interface{}{"server": "brave", "tool": "brave_web_search"})
+	if resp.Error != nil {
+		t.Fatalf("allowlisted literal-prefixed tool rejected: %v", resp.Error)
+	}
+	if !strings.Contains(*upstream, `"name":"brave_web_search"`) {
+		t.Errorf("tool name was trimmed before dispatch: %s", *upstream)
+	}
+}
+
+// structuredContent is the machine copy of the result; the cap must bound it
+// too, with an honest marker.
+func TestTruncateToolResult_BoundsStructuredContent(t *testing.T) {
+	big, _ := json.Marshal(map[string]string{"blob": strings.Repeat("s", 4000)})
+	raw, _ := json.Marshal(map[string]interface{}{
+		"content":           []map[string]interface{}{{"type": "text", "text": strings.Repeat("x", 3000)}},
+		"structuredContent": json.RawMessage(big),
+	})
+	out := truncateToolResult(raw, 500, true)
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result["structuredContent"]; ok {
+		t.Error("oversized structuredContent survived the cap")
+	}
+	if !strings.Contains(string(result["content"]), "structuredContent") {
+		t.Error("marker does not mention the omitted structuredContent")
+	}
+
+	// Small structuredContent under the cap must survive even when text is cut.
+	raw2, _ := json.Marshal(map[string]interface{}{
+		"content":           []map[string]interface{}{{"type": "text", "text": strings.Repeat("x", 3000)}},
+		"structuredContent": map[string]int{"answer": 42},
+	})
+	out2 := truncateToolResult(raw2, 500, true)
+	var result2 map[string]json.RawMessage
+	_ = json.Unmarshal(out2, &result2)
+	if _, ok := result2["structuredContent"]; !ok {
+		t.Error("small structuredContent dropped")
+	}
+
+	// Oversized structuredContent alone (text under cap) must still trigger.
+	raw3, _ := json.Marshal(map[string]interface{}{
+		"content":           []map[string]interface{}{{"type": "text", "text": "short"}},
+		"structuredContent": json.RawMessage(big),
+	})
+	out3 := truncateToolResult(raw3, 500, true)
+	var result3 map[string]json.RawMessage
+	_ = json.Unmarshal(out3, &result3)
+	if _, ok := result3["structuredContent"]; ok {
+		t.Error("structuredContent-only overflow not bounded")
+	}
+	if !strings.Contains(string(result3["content"]), "short") {
+		t.Error("under-cap text damaged when only structuredContent overflowed")
+	}
+}
+
+// A nonconforming "Content" key must degrade to truncation, not bypass it.
+func TestTruncateToolResult_CaseInsensitiveContentKey(t *testing.T) {
+	raw := json.RawMessage(`{"Content":[{"type":"text","text":"` + strings.Repeat("x", 3000) + `"}]}`)
+	out := truncateToolResult(raw, 500, true)
+	if len(out) >= len(raw) {
+		t.Errorf("uppercase Content bypassed the cap: %d bytes", len(out))
+	}
+}
+
+// The marker's advice must be followable: config caps are overridden by
+// passing the argument; only explicit caps can be "raised".
+func TestTruncateToolResult_MarkerAdviceMatchesCapSource(t *testing.T) {
+	raw, _ := json.Marshal(map[string]interface{}{
+		"content": []map[string]interface{}{{"type": "text", "text": strings.Repeat("x", 3000)}},
+	})
+	if out := string(truncateToolResult(raw, 500, false)); !strings.Contains(out, "pass max_response_chars") || strings.Contains(out, "omit") {
+		t.Errorf("config-cap marker advice wrong: %.200s", out)
+	}
+	if out := string(truncateToolResult(raw, 500, true)); !strings.Contains(out, "raise max_response_chars") {
+		t.Errorf("explicit-cap marker advice wrong: %.200s", out)
+	}
+}
+
+// A cap landing mid-rune must back up to the boundary, not emit U+FFFD.
+func TestTruncateToolResult_CutsAtRuneBoundary(t *testing.T) {
+	text := strings.Repeat("界", 1000) // 3 bytes per rune
+	raw, _ := json.Marshal(map[string]interface{}{
+		"content": []map[string]interface{}{{"type": "text", "text": text}},
+	})
+	out := truncateToolResult(raw, 500, true)
+	if strings.Contains(string(out), "�") {
+		t.Errorf("mid-rune cut produced replacement characters")
 	}
 }
