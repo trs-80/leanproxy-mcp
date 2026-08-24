@@ -300,14 +300,22 @@ func (sc *SemanticCache) Get(ctx context.Context, prompt, toolName string, embed
 
 	if ok {
 		// Present but expired: remove it (re-checking under the write lock —
-		// a concurrent Set may have replaced it with a fresh entry).
+		// a concurrent Set may have replaced it with a fresh entry). The
+		// vector is only deleted when WE removed the entry: the vector ID is
+		// the cache key, so deleting unconditionally would destroy the vector
+		// a concurrent Set just upserted, leaving a fresh entry that exact-
+		// matches but never surfaces in semantic search again.
 		sc.mu.Lock()
+		removed := false
 		if current, still := sc.entries[key]; still && current == entry {
 			sc.removeEntryLocked(key)
+			removed = true
 		}
 		sc.mu.Unlock()
 		sc.misses.Add(1)
-		sc.asyncDeleteVector(key)
+		if removed {
+			sc.asyncDeleteVector(key)
+		}
 		return miss, nil
 	}
 

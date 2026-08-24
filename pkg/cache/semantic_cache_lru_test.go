@@ -132,3 +132,54 @@ func TestSemanticCacheSetExistingKeyAtCapDoesNotEvict(t *testing.T) {
 		}
 	}
 }
+
+// The expired path must delete the vector only when it removed the map entry
+// itself; when the write-lock recheck sees a different (concurrently
+// refreshed) entry it skips removeEntryLocked, and the vector delete has to
+// follow the same verdict or the fresh entry serves exact hits while never
+// surfacing in semantic search. The race branch itself needs an interleave a
+// sequential test cannot force, so this pins the two reachable behaviors
+// around it: our-entry expiry still deletes the vector, and a refreshed entry
+// keeps both its map slot and its vector.
+func TestGetExpired_VectorDeleteFollowsEntryRemoval(t *testing.T) {
+	mock := newMockVectorStore()
+	sc := NewSemanticCache(mock, nil, time.Hour)
+	ctx := context.Background()
+	embed := []float32{0.1, 0.2, 0.3, 0.4}
+
+	if err := sc.Set(ctx, "prompt", json.RawMessage(`{"r":1}`), "tool", embed); err != nil {
+		t.Fatal(err)
+	}
+	key := cacheKey("tool", "prompt")
+
+	// Expire the entry in place.
+	sc.mu.Lock()
+	sc.entries[key].CreatedAt = time.Now().Add(-2 * time.Hour)
+	sc.mu.Unlock()
+
+	if res, err := sc.Get(ctx, "prompt", "tool", nil); err != nil || res.HitType != HitMiss {
+		t.Fatalf("expected miss on expired entry, got %+v err=%v", res, err)
+	}
+	sc.jobsWg.Wait()
+	mock.mu.Lock()
+	_, vectorAlive := mock.records[key]
+	mock.mu.Unlock()
+	if vectorAlive {
+		t.Error("expired entry removed but its vector was kept")
+	}
+
+	// Refreshed entry: Set again; a subsequent Get must keep entry AND vector.
+	if err := sc.Set(ctx, "prompt", json.RawMessage(`{"r":2}`), "tool", embed); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := sc.Get(ctx, "prompt", "tool", nil); err != nil || res.HitType != HitExact {
+		t.Fatalf("expected exact hit on refreshed entry, got %+v err=%v", res, err)
+	}
+	sc.jobsWg.Wait()
+	mock.mu.Lock()
+	_, vectorAlive2 := mock.records[key]
+	mock.mu.Unlock()
+	if !vectorAlive2 {
+		t.Error("refreshed entry's vector was deleted")
+	}
+}
