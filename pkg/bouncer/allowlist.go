@@ -331,7 +331,7 @@ func MatchSecret(input string) []string {
 var builtInPrefilter = buildPrefilter(PatternsToRegexps(BuiltInPatterns))
 
 func RedactSecrets(input string) string {
-	lowered := strings.ToLower(input)
+	lowered := foldNormString(input)
 	result := input
 	for i, pattern := range BuiltInPatterns {
 		if !builtInPrefilter.possibleString(i, lowered) {

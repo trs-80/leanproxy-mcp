@@ -65,7 +65,7 @@ type span struct{ start, end int }
 // pattern. Overlapping or adjacent matches from different patterns are
 // coalesced so each byte of input is redacted at most once.
 func (r *Redactor) findSpans(data []byte) []span {
-	lowered := bytes.ToLower(data)
+	lowered := foldNorm(data)
 	var spans []span
 	for i, pattern := range r.patterns {
 		if !r.prefilter.possible(i, lowered) {
@@ -271,7 +271,7 @@ func (r *Redactor) canSkipJSON(data []byte) bool {
 	if hasInvisible(string(data)) {
 		return false
 	}
-	lowered := bytes.ToLower(data)
+	lowered := foldNorm(data)
 	return !r.prefilter.anyPossible(lowered) && !sensitiveKeyTriggers.anyPossible(lowered)
 }
 
@@ -381,7 +381,7 @@ func (r *Redactor) redactString(data string) (string, int) {
 	// matches, return the original so benign content (e.g. ZWJ emoji
 	// sequences) is passed through byte-for-byte.
 	result := stripInvisible(data)
-	lowered := strings.ToLower(result)
+	lowered := foldNormString(result)
 	totalCount := 0
 	for i, pattern := range r.patterns {
 		if !r.prefilter.possibleString(i, lowered) {

@@ -28,7 +28,7 @@ func TestPrefilterIsSupersetOfPatterns(t *testing.T) {
 			}
 		}
 		for _, in := range tc.match {
-			lowered := strings.ToLower(in)
+			lowered := foldNormString(in)
 			if !r.prefilter.possibleString(idx, lowered) {
 				t.Errorf("prefilter rejected %q, which pattern %s matches", in, tc.pattern)
 			}
