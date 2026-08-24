@@ -134,6 +134,21 @@ func (h *Handler) filterTools(serverName string, tools []Tool) []Tool {
 	return kept
 }
 
+// toolExposed reports whether the server's include/exclude filter leaves the
+// tool callable. Filters gate dispatch as well as discovery: the docs present
+// them as an allowlist/denylist, so a hidden tool must not remain invocable
+// by guessing its name.
+func (h *Handler) toolExposed(serverName, toolName string) bool {
+	f, ok := h.toolFilters[serverName]
+	if !ok {
+		return true
+	}
+	if f.include != nil && !f.include[toolName] {
+		return false
+	}
+	return !f.exclude[toolName]
+}
+
 // storeTools writes a server's (filtered) tool list into the cache.
 func (h *Handler) storeTools(serverName string, tools []Tool) {
 	tools = h.filterTools(serverName, tools)
@@ -465,6 +480,33 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 		}, nil
 	}
 
+	if !h.toolExposed(serverName, toolName) {
+		return &Response{
+			JSONRPC: JSONRPCVersion,
+			Error:   NewError(ErrCodeInvalidParams, fmt.Sprintf("tool %s is not exposed on server %s (tools filter in leanproxy config)", toolName, serverName)),
+			ID:      req.ID,
+		}, nil
+	}
+
+	// The truncation marker tells the model to adjust max_response_chars, so
+	// this path must honor it too — and strip it before forwarding, since the
+	// upstream tool's schema does not know the parameter.
+	explicitCap := 0
+	if len(params.Arguments) > 0 {
+		var argMap map[string]interface{}
+		if err := json.Unmarshal(params.Arguments, &argMap); err == nil {
+			if m, ok := argMap["max_response_chars"].(float64); ok {
+				if m > 0 {
+					explicitCap = int(m)
+				}
+				delete(argMap, "max_response_chars")
+				if b, err := json.Marshal(argMap); err == nil {
+					params.Arguments = b
+				}
+			}
+		}
+	}
+
 	// Perform MCP initialize handshake if not yet done for this server instance.
 	if !h.pool.IsServerMCPInitialized(serverName) {
 		h.logger.Debug("initializing MCP session with server", "name", serverName)
@@ -498,7 +540,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 	}
 
 	result := resp.Result
-	if cap := h.responseCapFor(serverName, toolName, 0); cap > 0 {
+	if cap := h.responseCapFor(serverName, toolName, explicitCap); cap > 0 {
 		result = truncateToolResult(result, cap)
 	}
 
@@ -1033,6 +1075,14 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 		toolName = strings.TrimPrefix(toolName, serverName+"_")
 	}
 
+	if !h.toolExposed(serverName, toolName) {
+		return &Response{
+			JSONRPC: JSONRPCVersion,
+			Error:   NewError(ErrCodeInvalidParams, fmt.Sprintf("tool %s is not exposed on server %s (tools filter in leanproxy config)", toolName, serverName)),
+			ID:      req.ID,
+		}, nil
+	}
+
 	h.logger.Info("invoke_tool called", "server", serverName, "tool", toolName)
 
 	state, stateErr := h.pool.GetServerState(serverName)
@@ -1491,13 +1541,19 @@ func (h *Handler) SetDefaultMaxResponseChars(n int) {
 // the cut is appended so the model knows the output is partial and how to get
 // the rest.
 func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
-	var result struct {
-		Content []map[string]interface{} `json:"content"`
-		IsError *bool                    `json:"isError,omitempty"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil || len(result.Content) == 0 {
+	// The envelope is kept as raw fields so truncation never drops top-level
+	// members it does not model (structuredContent, _meta, ...): rebuilding
+	// only {content, isError} silently violated the result schema for tools
+	// with an outputSchema.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return raw
 	}
+	var blocks []map[string]interface{}
+	if err := json.Unmarshal(envelope["content"], &blocks); err != nil || len(blocks) == 0 {
+		return raw
+	}
+	result := struct{ Content []map[string]interface{} }{Content: blocks}
 
 	total := 0
 	for _, block := range result.Content {
@@ -1540,11 +1596,12 @@ func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
 	marker := fmt.Sprintf("\n[leanproxy: truncated, %d of %d chars shown; raise or omit max_response_chars for more]", maxChars, total)
 	kept = append(kept, map[string]interface{}{"type": "text", "text": marker})
 
-	out := map[string]interface{}{"content": kept}
-	if result.IsError != nil {
-		out["isError"] = *result.IsError
+	newContent, err := json.Marshal(kept)
+	if err != nil {
+		return raw
 	}
-	trimmed, err := json.Marshal(out)
+	envelope["content"] = newContent
+	trimmed, err := json.Marshal(envelope)
 	if err != nil {
 		return raw
 	}

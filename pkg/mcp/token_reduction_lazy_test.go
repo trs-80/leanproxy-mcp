@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mmornati/leanproxy-mcp/pkg/pool"
 )
 
 func lazyToolsList(t *testing.T, h *Handler) []Tool {
@@ -238,5 +241,111 @@ func TestTruncateToolResult_KeepsTrailingNonTextBlocks(t *testing.T) {
 	}
 	if !sawImage {
 		t.Error("trailing image block was dropped by truncation")
+	}
+}
+
+func TestTruncateToolResult_PreservesTopLevelFields(t *testing.T) {
+	raw, _ := json.Marshal(map[string]interface{}{
+		"content":           []map[string]interface{}{{"type": "text", "text": strings.Repeat("x", 2000)}},
+		"structuredContent": map[string]interface{}{"answer": 42},
+		"_meta":             map[string]interface{}{"trace": "abc"},
+		"isError":           false,
+	})
+	out := truncateToolResult(raw, 500)
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"structuredContent", "_meta", "isError"} {
+		if _, ok := result[field]; !ok {
+			t.Errorf("truncation dropped top-level field %q", field)
+		}
+	}
+	if !strings.Contains(string(result["content"]), "truncated") {
+		t.Error("content was not truncated")
+	}
+}
+
+// Discovery filters must also gate dispatch: docs call include/exclude an
+// allowlist/denylist, so an excluded tool reachable by guessing its name
+// would be a policy bypass.
+func TestToolFilter_BlocksDispatch(t *testing.T) {
+	sent := 0
+	mp := newMockPool()
+	mp.servers["gh"] = "idle"
+	mp.sendRequestFunc = func(ctx context.Context, name, method string, params json.RawMessage, timeout time.Duration) (*pool.Response, error) {
+		if method == MethodToolsCall {
+			sent++
+		}
+		res, _ := json.Marshal(map[string]interface{}{"content": []map[string]string{{"type": "text", "text": "ok"}}})
+		return &pool.Response{Result: res}, nil
+	}
+	h := NewHandler(mp, nil)
+	h.pool.MarkServerMCPInitialized("gh")
+	h.SetToolFilter("gh", nil, []string{"delete_repo"})
+	seedToolCache(h, "gh", Tool{Name: "list_issues", InputSchema: json.RawMessage(`{}`)})
+
+	// Direct tools/call path.
+	args, _ := json.Marshal(map[string]interface{}{"name": "gh_delete_repo", "arguments": map[string]interface{}{}})
+	resp, err := h.handleToolsCall(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1"), Params: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "not exposed") {
+		t.Errorf("direct call to excluded tool not blocked: %+v", resp)
+	}
+
+	// invoke_tool path.
+	resp = callGatewayTool(t, h, "invoke_tool", map[string]interface{}{"server": "gh", "tool": "delete_repo"})
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "not exposed") {
+		t.Errorf("invoke_tool of excluded tool not blocked: %+v", resp)
+	}
+	if sent != 0 {
+		t.Errorf("excluded tool reached the upstream server %d times", sent)
+	}
+
+	// Non-excluded tool still dispatches on both paths.
+	if resp := callGatewayTool(t, h, "invoke_tool", map[string]interface{}{"server": "gh", "tool": "list_issues"}); resp.Error != nil {
+		t.Errorf("allowed tool blocked: %+v", resp.Error)
+	}
+	if sent != 1 {
+		t.Errorf("allowed tool dispatched %d times, want 1", sent)
+	}
+}
+
+// The truncation marker tells the model to raise max_response_chars; on the
+// lazy direct path that argument must be honored (and stripped before the
+// call reaches the upstream tool, whose schema does not know it).
+func TestToolsCallLazy_HonorsAndStripsMaxResponseChars(t *testing.T) {
+	var upstreamArgs string
+	mp := newMockPool()
+	mp.servers["cbm"] = "idle"
+	mp.sendRequestFunc = func(ctx context.Context, name, method string, params json.RawMessage, timeout time.Duration) (*pool.Response, error) {
+		var p ToolsCallParams
+		_ = json.Unmarshal(params, &p)
+		upstreamArgs = string(p.Arguments)
+		res, _ := json.Marshal(map[string]interface{}{"content": []map[string]string{{"type": "text", "text": strings.Repeat("x", 5000)}}})
+		return &pool.Response{Result: res}, nil
+	}
+	h := NewHandler(mp, nil)
+	h.pool.MarkServerMCPInitialized("cbm")
+
+	args, _ := json.Marshal(map[string]interface{}{
+		"name":      "cbm_index_status",
+		"arguments": map[string]interface{}{"project": "p", "max_response_chars": 600},
+	})
+	resp, err := h.handleToolsCall(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1"), Params: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, resp)
+	if !strings.Contains(text, "truncated, 600 of 5000") {
+		t.Errorf("max_response_chars not honored on direct path: %.120s", text)
+	}
+	if strings.Contains(upstreamArgs, "max_response_chars") {
+		t.Errorf("max_response_chars leaked to upstream tool: %s", upstreamArgs)
+	}
+	if !strings.Contains(upstreamArgs, "project") {
+		t.Errorf("real arguments lost: %s", upstreamArgs)
 	}
 }
