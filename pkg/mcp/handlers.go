@@ -44,6 +44,102 @@ type Handler struct {
 	// defaultMaxResponseChars, when >0, caps every invoke_tool result that does
 	// not carry an explicit max_response_chars argument.
 	defaultMaxResponseChars int
+	// toolFilters restricts which upstream tools a server contributes to the
+	// cache (and hence to tools/list stubs, search_tools, list_tools).
+	toolFilters map[string]toolFilter
+	// toolResponseCaps holds per-tool result caps keyed "server/tool"; they
+	// override defaultMaxResponseChars and are overridden by an explicit
+	// max_response_chars argument.
+	toolResponseCaps map[string]int
+}
+
+type toolFilter struct {
+	include map[string]bool
+	exclude map[string]bool
+}
+
+// SetToolFilter restricts the tools exposed for a server. With a non-empty
+// include list only those tools are kept; exclude removes tools from whatever
+// remains. Under flat-rate billing every exposed tool is paid for on every
+// turn (schema plus, on some clients, several name echoes), so trimming a
+// server to the tools actually used is the largest per-turn lever.
+func (h *Handler) SetToolFilter(serverName string, include, exclude []string) {
+	if h.toolFilters == nil {
+		h.toolFilters = make(map[string]toolFilter)
+	}
+	f := toolFilter{}
+	if len(include) > 0 {
+		f.include = make(map[string]bool, len(include))
+		for _, n := range include {
+			f.include[n] = true
+		}
+	}
+	if len(exclude) > 0 {
+		f.exclude = make(map[string]bool, len(exclude))
+		for _, n := range exclude {
+			f.exclude[n] = true
+		}
+	}
+	h.toolFilters[serverName] = f
+}
+
+// SetToolMaxResponseChars sets a per-tool result cap (chars). Values below
+// minResponseChars are raised to it; zero removes the cap.
+func (h *Handler) SetToolMaxResponseChars(serverName, toolName string, n int) {
+	if h.toolResponseCaps == nil {
+		h.toolResponseCaps = make(map[string]int)
+	}
+	key := serverName + "/" + toolName
+	if n <= 0 {
+		delete(h.toolResponseCaps, key)
+		return
+	}
+	if n < minResponseChars {
+		n = minResponseChars
+	}
+	h.toolResponseCaps[key] = n
+}
+
+// responseCapFor resolves the effective result cap: explicit argument, then
+// per-tool config, then the global default. Zero means unlimited.
+func (h *Handler) responseCapFor(serverName, toolName string, explicit int) int {
+	if explicit > 0 {
+		if explicit < minResponseChars {
+			return minResponseChars
+		}
+		return explicit
+	}
+	if n, ok := h.toolResponseCaps[serverName+"/"+toolName]; ok {
+		return n
+	}
+	return h.defaultMaxResponseChars
+}
+
+// filterTools applies the server's include/exclude lists.
+func (h *Handler) filterTools(serverName string, tools []Tool) []Tool {
+	f, ok := h.toolFilters[serverName]
+	if !ok || (f.include == nil && f.exclude == nil) {
+		return tools
+	}
+	kept := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if f.include != nil && !f.include[t.Name] {
+			continue
+		}
+		if f.exclude[t.Name] {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept
+}
+
+// storeTools writes a server's (filtered) tool list into the cache.
+func (h *Handler) storeTools(serverName string, tools []Tool) {
+	tools = h.filterTools(serverName, tools)
+	h.toolCache.mu.Lock()
+	h.toolCache.tools[serverName] = tools
+	h.toolCache.mu.Unlock()
 }
 
 type AggregatedManifest struct {
@@ -205,12 +301,17 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 	h.logger.Debug("tools/list request received, returning gateway tools only")
 
 	gatewayTools := make([]Tool, 0)
-	for _, def := range GetAllToolDefinitions() {
-		gatewayTools = append(gatewayTools, Tool{
-			Name:        def.Name,
-			Description: def.Description,
-			InputSchema: def.InputSchema,
-		})
+	// In lazy mode every upstream tool is callable by name, so the gateway
+	// wrappers are pure per-turn overhead (measured on a flat-rate client:
+	// ~620 tokens/turn, never called). They stay for the non-lazy gateway.
+	if !h.lazyLoading {
+		for _, def := range GetAllToolDefinitions() {
+			gatewayTools = append(gatewayTools, Tool{
+				Name:        def.Name,
+				Description: def.Description,
+				InputSchema: def.InputSchema,
+			})
+		}
 	}
 
 	if h.lazyLoading {
@@ -222,8 +323,19 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 			h.refreshToolCacheFromServers(ctx)
 		}
 
+		// Sorted output: identical caches must render identically across
+		// sessions, otherwise map order shuffles the prefix and defeats
+		// provider prompt caching.
 		h.toolCache.mu.RLock()
-		for serverName, tools := range h.toolCache.tools {
+		serverNames := make([]string, 0, len(h.toolCache.tools))
+		for serverName := range h.toolCache.tools {
+			serverNames = append(serverNames, serverName)
+		}
+		sort.Strings(serverNames)
+		for _, serverName := range serverNames {
+			tools := make([]Tool, len(h.toolCache.tools[serverName]))
+			copy(tools, h.toolCache.tools[serverName])
+			sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 			for _, tool := range tools {
 				stub := registry.ToolStub{
 					Name:        serverName + "_" + tool.Name,
@@ -383,8 +495,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 	}
 
 	result := resp.Result
-	if h.defaultMaxResponseChars > 0 {
-		result = truncateToolResult(result, h.defaultMaxResponseChars)
+	if cap := h.responseCapFor(serverName, toolName, 0); cap > 0 {
+		result = truncateToolResult(result, cap)
 	}
 
 	return &Response{
@@ -553,9 +665,7 @@ func (h *Handler) loadFromPersistentCache(ctx context.Context) {
 			}
 		}
 
-		h.toolCache.mu.Lock()
-		h.toolCache.tools[serverName] = tools
-		h.toolCache.mu.Unlock()
+		h.storeTools(serverName, tools)
 
 		h.logger.Debug("loaded tools from persistent cache", "server", serverName, "count", len(tools))
 	}
@@ -686,9 +796,7 @@ func (h *Handler) refreshToolCacheFromServers(ctx context.Context) {
 			continue
 		}
 
-		h.toolCache.mu.Lock()
-		h.toolCache.tools[result.name] = result.tools
-		h.toolCache.mu.Unlock()
+		h.storeTools(result.name, result.tools)
 
 		if h.toolStore != nil {
 			if err := h.toolStore.SetTools(result.name, toolsToCachedTools(result.tools)); err != nil {
@@ -886,7 +994,7 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	var serverName, toolName string
 	var arguments json.RawMessage
 	var err error
-	maxResponseChars := h.defaultMaxResponseChars
+	explicitCap := 0
 
 	if params.Arguments != nil {
 		var args map[string]interface{}
@@ -905,10 +1013,7 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 				}
 			}
 			if m, ok := args["max_response_chars"].(float64); ok && m > 0 {
-				maxResponseChars = int(m)
-				if maxResponseChars < minResponseChars {
-					maxResponseChars = minResponseChars
-				}
+				explicitCap = int(m)
 			}
 		}
 	}
@@ -1020,8 +1125,8 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	}
 
 	result := resp.Result
-	if maxResponseChars > 0 {
-		result = truncateToolResult(result, maxResponseChars)
+	if cap := h.responseCapFor(serverName, toolName, explicitCap); cap > 0 {
+		result = truncateToolResult(result, cap)
 	}
 
 	return &Response{
@@ -1310,14 +1415,23 @@ func formatTool(tool Tool, serverName string, maxDescChars int) string {
 	return formatToolSearchResult(serverName, tool.Name, tool.Description, required, optional, maxDescChars)
 }
 
+// truncateDescription cuts at a word boundary and appends a single ellipsis
+// rune: a mid-word cut wastes the partial token, and "…" tokenizes shorter
+// than "...". Falls back to a hard cut when no space is found in the last
+// third of the budget.
 func truncateDescription(description string, maxChars int) string {
 	if maxChars <= 0 || len(description) <= maxChars {
 		return description
 	}
-	if maxChars < 3 {
+	const ellipsis = "…" // 3 bytes
+	if maxChars <= len(ellipsis) {
 		return description[:maxChars]
 	}
-	return description[:maxChars-3] + "..."
+	cut := maxChars - len(ellipsis)
+	if i := strings.LastIndex(description[:cut], " "); i >= cut*2/3 {
+		cut = i
+	}
+	return strings.TrimRight(description[:cut], " ,;:-") + ellipsis
 }
 
 func (h *Handler) lookupToolSchema(serverName, toolName string) json.RawMessage {
@@ -1354,6 +1468,10 @@ func toolsToCachedTools(tools []Tool) []toolstore.CachedTool {
 // dominates.
 const minResponseChars = 200
 
+// truncationMarkerSlack: results over the cap by less than this are passed
+// through untouched, since the truncation marker is itself ~90 chars.
+const truncationMarkerSlack = 100
+
 // SetDefaultMaxResponseChars sets a server-side default cap applied to every
 // invoke_tool result that does not carry an explicit max_response_chars.
 // Zero (the default) means unlimited.
@@ -1384,7 +1502,8 @@ func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
 			total += len(text)
 		}
 	}
-	if total <= maxChars {
+	// Truncating only pays when it saves more than the marker costs.
+	if total <= maxChars+truncationMarkerSlack {
 		return raw
 	}
 
@@ -1522,6 +1641,20 @@ const stubDescChars = 160
 // schemas.
 const stubParamDescChars = 48
 
+// stubEnumMaxValues / stubEnumMaxChars bound which enums survive compaction.
+const (
+	stubEnumMaxValues = 6
+	stubEnumMaxChars  = 60
+)
+
+func enumChars(vals []interface{}) int {
+	n := 0
+	for _, v := range vals {
+		n += len(fmt.Sprint(v))
+	}
+	return n
+}
+
 // fullCoverageBonus is added when every query word matches, guaranteeing
 // full-coverage matches sort above any partial match (max per-word score is
 // 10, so partials cannot reach it without full coverage).
@@ -1541,26 +1674,32 @@ func compactSchema(schema json.RawMessage) json.RawMessage {
 	fallback := json.RawMessage(`{"type":"object"}`)
 	var full struct {
 		Properties map[string]struct {
-			Type        string `json:"type"`
-			Description string `json:"description"`
+			Type        string        `json:"type"`
+			Description string        `json:"description"`
+			Enum        []interface{} `json:"enum"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
 	if err := json.Unmarshal(schema, &full); err != nil || len(full.Properties) == 0 {
 		return fallback
 	}
-	props := make(map[string]map[string]string, len(full.Properties))
+	props := make(map[string]map[string]interface{}, len(full.Properties))
 	for name, p := range full.Properties {
 		t := p.Type
 		if t == "" {
 			t = "string"
 		}
-		props[name] = map[string]string{"type": t}
+		props[name] = map[string]interface{}{"type": t}
 		// A short description per param stays: without it models guess which
 		// params exist for what (measured on Bob: a bare include_details flag
 		// went unused and the model fanned out 23 per-item calls instead of 1).
 		if d := truncateDescription(p.Description, stubParamDescChars); d != "" {
 			props[name]["description"] = d
+		}
+		// Short enums are cheap insurance: ~30 bytes per turn versus a whole
+		// re-billed turn when the model guesses an invalid value.
+		if len(p.Enum) > 0 && len(p.Enum) <= stubEnumMaxValues && enumChars(p.Enum) <= stubEnumMaxChars {
+			props[name]["enum"] = p.Enum
 		}
 	}
 	out := map[string]interface{}{"type": "object", "properties": props}

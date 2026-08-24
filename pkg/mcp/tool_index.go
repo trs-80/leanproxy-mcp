@@ -167,7 +167,7 @@ var LeanproxyTools = []ToolDefinition{
 			"properties": {
 				"query": {
 					"type": "string",
-					"description": "Keywords matched against tool names and descriptions (all words must match). Empty lists everything."
+					"description": "Keywords matched against tool names and descriptions; any word may match, more matches rank higher. Empty lists everything."
 				},
 				"server": {
 					"type": "string",

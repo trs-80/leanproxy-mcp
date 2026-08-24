@@ -325,7 +325,7 @@ func init() {
 	runCmd.Flags().StringVar(&runFlags.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	runCmd.Flags().BoolVarP(&runFlags.verbose, "verbose", "v", false, "Enable verbose logging")
 	runCmd.Flags().IntVar(&runFlags.maxResponseChars, "max-response-chars", 0, "Default cap on invoke_tool result size in characters (0 = unlimited; per-call max_response_chars overrides)")
-	runCmd.Flags().BoolVar(&runFlags.lazyTools, "lazy-tools", false, "Expose every upstream tool by prefixed name (server_tool) in tools/list with empty stub schemas; clients call tools directly without the invoke_tool wrapper, fetching full schemas on demand")
+	runCmd.Flags().BoolVar(&runFlags.lazyTools, "lazy-tools", false, "Expose every upstream tool by prefixed name (server_tool) in tools/list with compact stub schemas; clients call tools directly and the list_tools/invoke_tool/search_tools wrappers are omitted")
 	serverCmd.AddCommand(runCmd)
 
 	var healthCmd = &cobra.Command{
@@ -482,6 +482,14 @@ func runServerRun(cmd *cobra.Command, args []string) error {
 	for _, srv := range cfg.Servers {
 		if srv.TimeoutValue > 0 {
 			handler.SetTimeout(srv.Name, srv.TimeoutValue)
+		}
+		if srv.Tools != nil {
+			if len(srv.Tools.Include) > 0 || len(srv.Tools.Exclude) > 0 {
+				handler.SetToolFilter(srv.Name, srv.Tools.Include, srv.Tools.Exclude)
+			}
+			for tool, n := range srv.Tools.MaxResponseChars {
+				handler.SetToolMaxResponseChars(srv.Name, tool, n)
+			}
 		}
 	}
 

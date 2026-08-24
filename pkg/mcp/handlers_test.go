@@ -935,7 +935,7 @@ func TestFormatToolSearchResult(t *testing.T) {
 			required:      nil,
 			Optional:      nil,
 			maxDescChars:  20,
-			expectedParts: []string{"github_list_issues:", "github_list_issues: List all issues f..."},
+			expectedParts: []string{"github_list_issues:", "github_list_issues: List all issues…"},
 		},
 	}
 
@@ -985,7 +985,7 @@ func TestTruncateDescription(t *testing.T) {
 			name:        "truncate with ellipsis",
 			description: "Long description here",
 			maxChars:    10,
-			expected:    "Long de...",
+			expected:    "Long…",
 		},
 		{
 			name:        "very small max",
@@ -997,7 +997,7 @@ func TestTruncateDescription(t *testing.T) {
 			name:        "max 3 chars",
 			description: "Long description",
 			maxChars:    3,
-			expected:    "...",
+			expected:    "Lon",
 		},
 	}
 

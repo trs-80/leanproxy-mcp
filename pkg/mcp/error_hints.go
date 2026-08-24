@@ -56,13 +56,6 @@ var ErrorHintRegistry = map[string][]ErrorHint{
 			Action:     "check_dependencies",
 		},
 	},
-	"failed": {
-		{
-			Original:   "server error",
-			Suggestion: "The remote server encountered an error. Try again in a few moments, or check the server logs for more details.",
-			Action:     "retry",
-		},
-	},
 	"not authenticated": {
 		{
 			Original:   "not authenticated",
@@ -153,7 +146,7 @@ func EnrichError(originalMessage string) string {
 		patternLower := strings.ToLower(pattern)
 		if strings.Contains(originalLower, patternLower) {
 			hint := hints[0]
-			return fmt.Sprintf("%s\n\n💡 %s", originalMessage, hint.Suggestion)
+			return fmt.Sprintf("%s\nHint: %s", originalMessage, hint.Suggestion)
 		}
 	}
 
@@ -188,17 +181,16 @@ func GetAllHintsForError(originalMessage string) []ErrorHint {
 }
 
 func AddErrorContext(originalMessage, serverName, toolName string) string {
-	if serverName != "" || toolName != "" {
-		context := "\n\n📋 Context:"
-		if serverName != "" {
-			context += fmt.Sprintf("\n  Server: %s", serverName)
-		}
-		if toolName != "" {
-			context += fmt.Sprintf("\n  Tool: %s", toolName)
-		}
-		return originalMessage + context
+	// Compact: the model already knows what it called; one short bracket is
+	// enough to disambiguate in a batch, without a multi-line block.
+	switch {
+	case serverName != "" && toolName != "":
+		return fmt.Sprintf("%s [%s/%s]", originalMessage, serverName, toolName)
+	case serverName != "":
+		return fmt.Sprintf("%s [%s]", originalMessage, serverName)
+	case toolName != "":
+		return fmt.Sprintf("%s [%s]", originalMessage, toolName)
 	}
-
 	return originalMessage
 }
 

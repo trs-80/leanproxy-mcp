@@ -102,6 +102,20 @@ type ServerConfig struct {
 	IdleTimeoutValue    time.Duration      `yaml:"-"`
 	CacheSettings       *CacheSettings     `yaml:"cache_settings,omitempty"`
 	SummarizeSettings   *SummarizeSettings `yaml:"summarize_settings,omitempty"`
+	Tools               *ToolsConfig       `yaml:"tools,omitempty"`
+}
+
+// ToolsConfig trims what a server contributes to the client's tool list and
+// bounds what its tools may return. Every exposed tool is paid for on every
+// turn; every oversized result is re-billed on every later turn.
+type ToolsConfig struct {
+	// Include, when non-empty, exposes only these tools.
+	Include []string `yaml:"include,omitempty"`
+	// Exclude hides these tools (applied after Include).
+	Exclude []string `yaml:"exclude,omitempty"`
+	// MaxResponseChars caps results per tool name (chars); overrides the
+	// global --max-response-chars default for that tool.
+	MaxResponseChars map[string]int `yaml:"max_response_chars,omitempty"`
 }
 
 type ReconnectConfig struct {
