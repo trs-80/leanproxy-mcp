@@ -240,8 +240,17 @@ func (sp *ServerPool) Close() error {
 }
 
 func (sp *ServerPool) GetMetrics() PoolMetrics {
+	// Counters are written atomically outside the lock, so a plain struct
+	// copy would race; load each atomically and take the lock only for
+	// AvgLatencyMs (and the active-set length), which the lock owns.
+	metrics := PoolMetrics{
+		TotalRequests:  atomic.LoadInt64(&sp.metrics.TotalRequests),
+		Errors:         atomic.LoadInt64(&sp.metrics.Errors),
+		Timeouts:       atomic.LoadInt64(&sp.metrics.Timeouts),
+		WaitingClients: atomic.LoadInt64(&sp.metrics.WaitingClients),
+	}
 	sp.mu.Lock()
-	metrics := sp.metrics
+	metrics.AvgLatencyMs = sp.metrics.AvgLatencyMs
 	metrics.ActiveClients = int64(len(sp.active))
 	sp.mu.Unlock()
 
@@ -432,12 +441,13 @@ func (cp *ConnectionPool) SendToolRequest(ctx context.Context, serverName string
 	cp.mu.RUnlock()
 
 	if pool != nil {
-		atomic.AddInt64(&pool.metrics.TotalRequests, 1)
+		// Counter fields are always accessed atomically (writers here and in
+		// GetClient/ReturnClient run outside the lock); AvgLatencyMs is only
+		// touched under pool.mu. Mixing plain and atomic access to the same
+		// field is a data race.
+		total := atomic.AddInt64(&pool.metrics.TotalRequests, 1)
 		pool.mu.Lock()
-		total := pool.metrics.TotalRequests
-		if total > 0 {
-			pool.metrics.AvgLatencyMs = (pool.metrics.AvgLatencyMs*float64(total-1) + latency) / float64(total)
-		}
+		pool.metrics.AvgLatencyMs = (pool.metrics.AvgLatencyMs*float64(total-1) + latency) / float64(total)
 		pool.mu.Unlock()
 	}
 

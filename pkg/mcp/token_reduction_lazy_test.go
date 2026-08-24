@@ -211,3 +211,32 @@ func TestTruncateToolResult_SkipsWhenSavingsBelowMarker(t *testing.T) {
 		t.Errorf("expected truncation when well over cap")
 	}
 }
+
+func TestTruncateToolResult_KeepsTrailingNonTextBlocks(t *testing.T) {
+	raw, _ := json.Marshal(map[string]interface{}{
+		"content": []map[string]interface{}{
+			{"type": "text", "text": strings.Repeat("a", 2000)},
+			{"type": "text", "text": strings.Repeat("b", 2000)},
+			{"type": "image", "data": "xyz", "mimeType": "image/png"},
+		},
+	})
+	out := truncateToolResult(raw, 500)
+	var result struct {
+		Content []map[string]interface{} `json:"content"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	sawImage := false
+	for _, b := range result.Content {
+		if b["type"] == "image" {
+			sawImage = true
+		}
+		if txt, ok := b["text"].(string); ok && strings.HasPrefix(txt, "b") {
+			t.Errorf("second text block should be dropped entirely, got %d chars", len(txt))
+		}
+	}
+	if !sawImage {
+		t.Error("trailing image block was dropped by truncation")
+	}
+}

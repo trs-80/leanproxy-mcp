@@ -1515,11 +1515,13 @@ func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
 	for _, block := range result.Content {
 		text, ok := block["text"].(string)
 		if !ok {
+			// Non-text blocks (images, resources) are never truncated and must
+			// survive even after the text budget is spent.
 			kept = append(kept, block)
 			continue
 		}
 		if budget <= 0 {
-			break
+			continue
 		}
 		if len(text) > budget {
 			nb := make(map[string]interface{}, len(block))
@@ -1529,7 +1531,7 @@ func truncateToolResult(raw json.RawMessage, maxChars int) json.RawMessage {
 			nb["text"] = text[:budget]
 			kept = append(kept, nb)
 			budget = 0
-			break
+			continue
 		}
 		budget -= len(text)
 		kept = append(kept, block)
