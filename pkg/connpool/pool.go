@@ -75,6 +75,7 @@ func (c *ClientConnection) GetClient() *client.Client {
 
 type ServerPool struct {
 	mu        sync.Mutex
+	closed    bool
 	available chan *ClientConnection
 	active    map[*ClientConnection]struct{}
 	maxSize   int
@@ -93,9 +94,16 @@ func NewServerPool(maxSize int, config PoolConfig, logger *slog.Logger) *ServerP
 	}
 }
 
+var errPoolClosed = fmt.Errorf("connpool: pool closed")
+
 func (sp *ServerPool) GetClient(ctx context.Context, createFunc func() (*client.Client, error)) (*ClientConnection, error) {
 	select {
-	case conn := <-sp.available:
+	case conn, ok := <-sp.available:
+		if !ok {
+			// Close() closed the channel; a plain receive would yield a nil
+			// connection and panic in IsHealthy.
+			return nil, errPoolClosed
+		}
 		if conn.IsHealthy() {
 			sp.mu.Lock()
 			sp.active[conn] = struct{}{}
@@ -160,7 +168,10 @@ func (sp *ServerPool) waitForClient(ctx context.Context, createFunc func() (*cli
 
 	for {
 		select {
-		case conn := <-sp.available:
+		case conn, ok := <-sp.available:
+			if !ok {
+				return nil, errPoolClosed
+			}
 			atomic.AddInt64(&sp.metrics.AvailableClients, -1)
 			if conn.IsHealthy() {
 				sp.mu.Lock()
@@ -197,16 +208,31 @@ func (sp *ServerPool) waitForClient(ctx context.Context, createFunc func() (*cli
 func (sp *ServerPool) ReturnClient(conn *ClientConnection) {
 	sp.mu.Lock()
 	delete(sp.active, conn)
+	closed := sp.closed
 	sp.mu.Unlock()
 
 	atomic.AddInt64(&sp.metrics.ActiveClients, -1)
 
-	if !conn.IsHealthy() {
-		sp.logger.Debug("client unhealthy on return, closing", "server", conn.server)
-		conn.client.Close()
+	if closed || !conn.IsHealthy() {
+		if !closed {
+			sp.logger.Debug("client unhealthy on return, closing", "server", conn.server)
+		}
+		if conn.client != nil {
+			conn.client.Close()
+		}
 		return
 	}
 
+	// The send is serialized with Close() under sp.mu: sending on the
+	// channel after Close() closed it would panic.
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.closed {
+		if conn.client != nil {
+			conn.client.Close()
+		}
+		return
+	}
 	select {
 	case sp.available <- conn:
 		atomic.AddInt64(&sp.metrics.AvailableClients, 1)
@@ -221,6 +247,10 @@ func (sp *ServerPool) Close() error {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 
+	if sp.closed {
+		return nil
+	}
+	sp.closed = true
 	close(sp.available)
 
 	for conn := range sp.available {

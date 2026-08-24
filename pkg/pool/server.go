@@ -788,22 +788,49 @@ func (s *StdioServerV2) getStats() ServerStats {
 }
 
 func (s *StdioServerV2) enqueueRequest(req Request) bool {
+	// currentLoad is owned by the dispatch path (runRequestLoop increments on
+	// dequeue, releases on completion); counting here as well would
+	// double-count and permanently wedge the idle reaper.
 	s.mu.Lock()
 	if s.currentLoad >= s.maxConcurrent {
 		s.mu.Unlock()
 		return false
 	}
-	s.currentLoad++
 	s.mu.Unlock()
 
 	select {
 	case s.requestCh <- req:
 		return true
 	default:
-		s.mu.Lock()
-		s.currentLoad--
-		s.mu.Unlock()
 		return false
+	}
+}
+
+// failRequest answers a request that will never be dispatched (shutdown won
+// before a dispatch slot freed) so the caller gets an immediate error instead
+// of burning its full timeout: nothing else ever sends on its ResultCh.
+func (s *StdioServerV2) failRequest(req Request) {
+	resp := &Response{ID: req.ID, Error: &errs.JSONRPCError{
+		Code:    errs.ErrCodeServerError,
+		Message: fmt.Sprintf("pool: server %s is stopping", s.name),
+	}}
+	if req.ResultCh != nil {
+		select {
+		case req.ResultCh <- resp:
+		default:
+		}
+	}
+}
+
+// drainRequests fails everything still buffered in requestCh at shutdown.
+func (s *StdioServerV2) drainRequests() {
+	for {
+		select {
+		case req := <-s.requestCh:
+			s.failRequest(req)
+		default:
+			return
+		}
 	}
 }
 
@@ -816,17 +843,32 @@ func (s *StdioServerV2) runRequestLoop(ctx context.Context, stopCh chan struct{}
 			// tool call no longer head-of-line-blocks every other request to
 			// this server. Stdin writes stay serialized (stdinMu) and each
 			// response is routed to its waiter by unique wire ID.
+			//
+			// currentLoad counts every dequeued-but-unfinished request; the
+			// idle reaper's currentLoad==0 guard depends on it (state alone
+			// is not enough: only the first concurrent request claims busy).
+			s.mu.Lock()
+			s.currentLoad++
+			s.mu.Unlock()
 			select {
 			case s.dispatchSem <- struct{}{}:
 				s.wg.Add(1)
 				go func(req Request) {
 					defer s.wg.Done()
 					defer func() { <-s.dispatchSem }()
+					defer func() {
+						s.mu.Lock()
+						s.currentLoad--
+						s.lastRequestAt = time.Now()
+						s.mu.Unlock()
+					}()
 					s.processRequest(ctx, req, stopCh)
 				}(req)
 			case <-ctx.Done():
+				s.releaseAndFail(req)
 				return
 			case <-stopCh:
+				s.releaseAndFail(req)
 				return
 			}
 
@@ -834,11 +876,23 @@ func (s *StdioServerV2) runRequestLoop(ctx context.Context, stopCh chan struct{}
 			s.checkIdleTimeout(ctx)
 
 		case <-ctx.Done():
+			s.drainRequests()
 			return
 		case <-stopCh:
+			s.drainRequests()
 			return
 		}
 	}
+}
+
+// releaseAndFail undoes the load claim for a dequeued request that shutdown
+// prevented from dispatching, answers it, and drains the rest of the queue.
+func (s *StdioServerV2) releaseAndFail(req Request) {
+	s.mu.Lock()
+	s.currentLoad--
+	s.mu.Unlock()
+	s.failRequest(req)
+	s.drainRequests()
 }
 
 // deliverResponse hands a parsed response to the request waiting on its wire

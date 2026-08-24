@@ -486,11 +486,11 @@ func TestServerEnqueueRequest(t *testing.T) {
 		t.Error("expected enqueue to succeed")
 	}
 
-	server.mu.Lock()
-	if server.currentLoad != 1 {
-		t.Errorf("expected currentLoad=1, got %d", server.currentLoad)
+	// currentLoad is owned by the dispatch loop, not enqueueRequest; the
+	// request must simply be buffered.
+	if len(server.requestCh) != 1 {
+		t.Errorf("expected 1 buffered request, got %d", len(server.requestCh))
 	}
-	server.mu.Unlock()
 }
 
 func TestPoolGetServerStats(t *testing.T) {
