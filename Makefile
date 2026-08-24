@@ -103,7 +103,7 @@ test-e2e-short: ## Run E2E tests (short mode, requires built binary)
 bench: ## Run token-economy + NFR benchmarks, capture into bench-results/
 	@echo "Running token-economy benchmarks..."
 	@mkdir -p bench-results
-	$(GO) test -run=^$ -bench=. -benchmem -benchtime=3s -count=1 \
+	$(GO) test -run='^$$' -bench=. -benchmem -benchtime=3s -count=1 \
 		./tests/bench/... | tee bench-results/bench-$(shell date +%Y%m%d-%H%M%S).txt
 	@echo ""
 	@echo "Results written to bench-results/"
