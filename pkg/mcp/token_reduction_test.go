@@ -336,7 +336,7 @@ func TestToolsListStubs_CompactSchemasKeepParams(t *testing.T) {
 	seedToolCache(h, "cbm", Tool{
 		Name:        "list_projects",
 		Description: "List indexed projects with node counts",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number","description":"very long prose that must be dropped"},"filter":{"type":"string"}},"required":["limit"]}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number","description":"very long prose that goes on well past the truncation cap and must be dropped from the stub"},"filter":{"type":"string"}},"required":["limit"]}`),
 	})
 
 	resp, err := h.handleToolsList(context.Background(), &Request{JSONRPC: JSONRPCVersion, ID: json.RawMessage("1")})
@@ -363,11 +363,14 @@ func TestToolsListStubs_CompactSchemasKeepParams(t *testing.T) {
 		if schema.Type != "object" || schema.Properties["limit"]["type"] != "number" || schema.Properties["filter"]["type"] != "string" {
 			t.Errorf("stub schema lost params: %s", raw)
 		}
+		if d := schema.Properties["limit"]["description"]; d == "" || len(d) > 48 {
+			t.Errorf("param description missing or untruncated (%d chars): %s", len(d), raw)
+		}
 		if len(schema.Required) != 1 || schema.Required[0] != "limit" {
 			t.Errorf("stub schema lost required list: %s", raw)
 		}
-		if strings.Contains(string(raw), "prose") {
-			t.Errorf("stub schema kept prose: %s", raw)
+		if strings.Contains(string(raw), "must be dropped") {
+			t.Errorf("stub schema kept full prose beyond the cap: %s", raw)
 		}
 		return
 	}

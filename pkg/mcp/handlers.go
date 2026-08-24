@@ -1518,6 +1518,10 @@ func (h *Handler) suggestTools(serverName, toolName string, max int) string {
 // marginal value.
 const stubDescChars = 160
 
+// stubParamDescChars caps per-parameter description length inside compact stub
+// schemas.
+const stubParamDescChars = 48
+
 // fullCoverageBonus is added when every query word matches, guaranteeing
 // full-coverage matches sort above any partial match (max per-word score is
 // 10, so partials cannot reach it without full coverage).
@@ -1537,7 +1541,8 @@ func compactSchema(schema json.RawMessage) json.RawMessage {
 	fallback := json.RawMessage(`{"type":"object"}`)
 	var full struct {
 		Properties map[string]struct {
-			Type string `json:"type"`
+			Type        string `json:"type"`
+			Description string `json:"description"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -1551,6 +1556,12 @@ func compactSchema(schema json.RawMessage) json.RawMessage {
 			t = "string"
 		}
 		props[name] = map[string]string{"type": t}
+		// A short description per param stays: without it models guess which
+		// params exist for what (measured on Bob: a bare include_details flag
+		// went unused and the model fanned out 23 per-item calls instead of 1).
+		if d := truncateDescription(p.Description, stubParamDescChars); d != "" {
+			props[name]["description"] = d
+		}
 	}
 	out := map[string]interface{}{"type": "object", "properties": props}
 	if len(full.Required) > 0 {
