@@ -3,12 +3,12 @@
 site_name: LeanProxy-MCP
 site_description: "LeanProxy-MCP - Lightweight Token Firewall for MCP"
 site_author: "Massimo Mornati"
-site_url: https://mmornati.github.io/leanproxy-mcp
+site_url: https://trs-80.github.io/leanproxy-mcp
 
 # Repository settings
-repo_name: mmornati/leanproxy-mcp
-repo_url: https://github.com/mmornati/leanproxy-mcp
-edit_uri: https://github.com/mmornati/leanproxy-mcp/edit/main/docs/
+repo_name: trs-80/leanproxy-mcp
+repo_url: https://github.com/trs-80/leanproxy-mcp
+edit_uri: https://github.com/trs-80/leanproxy-mcp/edit/main/docs/
 
 # Copyright
 copyright: "Copyright &copy; 2026 Massimo Mornati"

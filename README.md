@@ -293,6 +293,7 @@ flowchart TB
 
 <p align="center">
   <a href="https://github.com/trs-80/leanproxy-mcp">GitHub</a> •
+  <a href="https://trs-80.github.io/leanproxy-mcp/">Documentation</a> •
   <a href="https://github.com/trs-80/leanproxy-mcp/issues">Issues</a> •
   <a href="https://github.com/mmornati/leanproxy-mcp">Upstream</a>
 </p>
