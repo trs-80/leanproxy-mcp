@@ -358,6 +358,13 @@ func (p *SSEPool) SendRequestToServerWithID(ctx context.Context, name string, me
 		return nil, err
 	}
 
+	if method == "initialize" {
+		// ensureConnected already ran the real MCP handshake via the
+		// transport client; forwarding this would reach the upstream as a
+		// tool literally named "initialize" and fail every cache refresh.
+		return &Response{Result: json.RawMessage(`{}`), ID: id}, nil
+	}
+
 	if method == "tools/list" {
 		tools, err := server.ListTools(ctx)
 		if err != nil {
