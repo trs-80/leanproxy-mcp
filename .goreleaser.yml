@@ -26,5 +26,5 @@ checksum:
   name_template: "checksums.txt"
 release:
   github:
-    owner: mmornati
+    owner: trs-80
     name: leanproxy-mcp
