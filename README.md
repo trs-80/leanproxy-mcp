@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go" alt="Go">
-  <img src="https://img.shields.io/github/v/release/mmornati/leanproxy-mcp?include_prereleases&label=Release" alt="Release">
+  <img src="https://img.shields.io/github/v/release/trs-80/leanproxy-mcp?include_prereleases&label=Release" alt="Release">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
   <img src="https://github.com/mmornati/leanproxy-mcp/actions/workflows/test.yml/badge.svg" alt="Test">
   <img src="https://github.com/mmornati/leanproxy-mcp/actions/workflows/lint.yml/badge.svg" alt="Lint">
@@ -167,13 +167,31 @@ Measured on v0.9.0 with the same MCP server tool counts as production. Native MC
 
 ### One-Line Install
 
-```bash
-# macOS/Linux via Homebrew
-brew tap mmornati/leanproxy-mcp https://github.com/mmornati/leanproxy-mcp
-brew install leanproxy-mcp
+Single static binary — no runtime dependencies (CGO-free, pure-Go SQLite).
+Download for your platform from the [latest release](https://github.com/trs-80/leanproxy-mcp/releases/latest):
 
-# ...or download binary for your platform
-curl -fsSL https://github.com/mmornati/leanproxy-mcp/releases/latest/download/leanproxy-mcp.tar.gz | tar xz
+```bash
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_darwin_arm64.tar.gz | tar xz
+
+# macOS (Intel)
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_darwin_amd64.tar.gz | tar xz
+
+# Linux (x86_64)
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_linux_amd64.tar.gz | tar xz
+
+# Linux (arm64)
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_linux_arm64.tar.gz | tar xz
+
+# then put it on your PATH
+chmod +x leanproxy-mcp && mv leanproxy-mcp ~/.local/bin/
+```
+
+Verify downloads against `checksums.txt` (SHA-256) attached to the release.
+
+```bash
+# ...or build from source (Go 1.25+)
+git clone https://github.com/trs-80/leanproxy-mcp && cd leanproxy-mcp && make build-local
 ```
 
 ### Configure Your IDE
