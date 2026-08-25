@@ -92,7 +92,7 @@ func TestStripInvisibleNoAllocWhenClean(t *testing.T) {
 }
 
 func BenchmarkRedactJSONCleanLarge(b *testing.B) {
-	var args []map[string]interface{}
+	args := make([]map[string]interface{}, 0, 200)
 	for i := 0; i < 200; i++ {
 		args = append(args, map[string]interface{}{"path": "/srv/app/file.go", "content": strings.Repeat("the quick brown fox ", 20), "n": i})
 	}
@@ -112,7 +112,7 @@ func BenchmarkRedactJSONCleanLarge(b *testing.B) {
 // embedded JSON). canSkipJSON rejects any payload containing '\\', so this
 // takes the full decode -> walk -> re-encode path even with zero secrets.
 func BenchmarkRedactJSONEscapedLarge(b *testing.B) {
-	var args []map[string]interface{}
+	args := make([]map[string]interface{}, 0, 200)
 	for i := 0; i < 200; i++ {
 		args = append(args, map[string]interface{}{
 			"path":    "C:\\Users\\dev\\project\\file.go",

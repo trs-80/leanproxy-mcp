@@ -320,21 +320,6 @@ func (s *sqliteStore) searchManual(ctx context.Context, vector []float32, k int)
 	return results, nil
 }
 
-func (s *sqliteStore) getRecord(ctx context.Context, id string) (VectorRecord, error) {
-	var rec VectorRecord
-	var vecBytes []byte
-	var metaStr sql.NullString
-
-	err := s.db.QueryRowContext(ctx, `SELECT id, vector, metadata FROM vectors WHERE id = ?`, id).Scan(&rec.ID, &vecBytes, &metaStr)
-	if err != nil {
-		return rec, fmt.Errorf("get record %q: %w", id, err)
-	}
-
-	rec.Vector = bytesToFloat32Slice(vecBytes)
-	rec.Metadata = unmarshalMetadata([]byte(metaStr.String))
-	return rec, nil
-}
-
 func (s *sqliteStore) Delete(ctx context.Context, ids ...string) error {
 	if len(ids) == 0 {
 		return nil

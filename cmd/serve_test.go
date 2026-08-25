@@ -966,7 +966,7 @@ func TestHandleBatchRequestAsync_LargeBatchBoundedAndOrdered(t *testing.T) {
 		return &proxy.JSONRPCResponse{JSONRPC: "2.0", Result: json.RawMessage(`"` + req.Method + `"`), ID: req.ID}, nil
 	}}
 
-	var entriesJSON []string
+	entriesJSON := make([]string, 0, entries)
 	for i := 0; i < entries; i++ {
 		entriesJSON = append(entriesJSON, fmt.Sprintf(`{"jsonrpc":"2.0","method":"m%02d","id":%d}`, i, i))
 	}
