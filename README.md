@@ -16,9 +16,8 @@
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go" alt="Go">
   <img src="https://img.shields.io/github/v/release/trs-80/leanproxy-mcp?include_prereleases&label=Release" alt="Release">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
-  <img src="https://github.com/mmornati/leanproxy-mcp/actions/workflows/test.yml/badge.svg" alt="Test">
-  <img src="https://github.com/mmornati/leanproxy-mcp/actions/workflows/lint.yml/badge.svg" alt="Lint">
-  <img src="https://codecov.io/gh/mmornati/leanproxy-mcp/branch/main/graph/badge.svg" alt="Coverage">
+  <img src="https://github.com/trs-80/leanproxy-mcp/actions/workflows/test.yml/badge.svg" alt="Test">
+  <img src="https://github.com/trs-80/leanproxy-mcp/actions/workflows/lint.yml/badge.svg" alt="Lint">
 </p>
 
 ---
@@ -293,9 +292,9 @@ flowchart TB
 ## Join the Community
 
 <p align="center">
-  <a href="https://github.com/mmornati/leanproxy-mcp">GitHub</a> •
-  <a href="https://mmornati.github.io/leanproxy-mcp/">Documentation</a> •
-  <a href="https://github.com/mmornati/leanproxy-mcp/issues">Issues</a>
+  <a href="https://github.com/trs-80/leanproxy-mcp">GitHub</a> •
+  <a href="https://github.com/trs-80/leanproxy-mcp/issues">Issues</a> •
+  <a href="https://github.com/mmornati/leanproxy-mcp">Upstream</a>
 </p>
 
 ---
