@@ -26,7 +26,6 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 checksum:
   name_template: "checksums.txt"
-release:
-  github:
-    owner: trs-80
-    name: leanproxy-mcp
+# No release.github block: GoReleaser infers owner/repo from the environment
+# (GITHUB_REPOSITORY in Actions, the git remote locally), so any fork can cut
+# releases without editing this file.
