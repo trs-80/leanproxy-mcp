@@ -172,16 +172,16 @@ Download for your platform from the [latest release](https://github.com/trs-80/l
 
 ```bash
 # macOS (Apple Silicon)
-curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_darwin_arm64.tar.gz | tar xz
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/latest/download/leanproxy-mcp_darwin_arm64.tar.gz | tar xz
 
 # macOS (Intel)
-curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_darwin_amd64.tar.gz | tar xz
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/latest/download/leanproxy-mcp_darwin_amd64.tar.gz | tar xz
 
 # Linux (x86_64)
-curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_linux_amd64.tar.gz | tar xz
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/latest/download/leanproxy-mcp_linux_amd64.tar.gz | tar xz
 
 # Linux (arm64)
-curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/download/v0.9.2/leanproxy-mcp_v0.9.2_linux_arm64.tar.gz | tar xz
+curl -fsSL https://github.com/trs-80/leanproxy-mcp/releases/latest/download/leanproxy-mcp_linux_arm64.tar.gz | tar xz
 
 # then put it on your PATH
 chmod +x leanproxy-mcp && mv leanproxy-mcp ~/.local/bin/

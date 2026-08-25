@@ -22,6 +22,8 @@ archives:
   - id: default
     formats: ["tar.gz"]
     files: []
+    # Unversioned asset names so releases/latest/download/ URLs never go stale.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 checksum:
   name_template: "checksums.txt"
 release:
