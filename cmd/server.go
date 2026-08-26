@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -905,6 +906,10 @@ func applyServerToolConfig(handler *mcp.Handler, cfg *migrate.Config) {
 	if cfg == nil {
 		return
 	}
+	if cfg.Optimization != nil && cfg.Optimization.MinifyResults != nil {
+		handler.SetMinifyResults(*cfg.Optimization.MinifyResults)
+	}
+	adaptive := false
 	for _, srv := range cfg.Servers {
 		if srv.TimeoutValue > 0 {
 			handler.SetTimeout(srv.Name, srv.TimeoutValue)
@@ -925,6 +930,22 @@ func applyServerToolConfig(handler *mcp.Handler, cfg *migrate.Config) {
 				continue
 			}
 			handler.SetToolCacheTTL(srv.Name, tool, ttl)
+		}
+		if srv.Tools.AdaptiveStubAfter != "" {
+			window, err := time.ParseDuration(srv.Tools.AdaptiveStubAfter)
+			if err != nil {
+				slog.Warn("invalid tools.adaptive_stub_after, ignoring", "server", srv.Name, "value", srv.Tools.AdaptiveStubAfter, "error", err)
+			} else {
+				handler.SetAdaptiveStubWindow(srv.Name, window)
+				adaptive = true
+			}
+		}
+	}
+	if adaptive {
+		if usr, err := user.Current(); err == nil {
+			handler.EnableUsageTracking(filepath.Join(usr.HomeDir, ".config", "leanproxy", "toolusage.json"))
+		} else {
+			slog.Warn("adaptive stubs disabled: cannot resolve home dir for usage file", "error", err)
 		}
 	}
 }

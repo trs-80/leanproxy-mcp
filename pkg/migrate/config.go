@@ -123,6 +123,12 @@ type ToolsConfig struct {
 	// lapses. Agent sessions repeat identical discovery calls constantly;
 	// each hit saves a full upstream round trip.
 	CacheTTL map[string]string `yaml:"cache_ttl,omitempty"`
+	// AdaptiveStubAfter enables usage-adaptive stubs for this server
+	// (duration string, e.g. "168h"): a tool not invoked within the window
+	// renders as a name-only stub in lazy tools/list, reclaiming its schema
+	// tokens on every turn. The tool stays callable and searchable, and one
+	// invocation restores its full stub.
+	AdaptiveStubAfter string `yaml:"adaptive_stub_after,omitempty"`
 }
 
 type ReconnectConfig struct {
@@ -197,6 +203,9 @@ type Config struct {
 
 type OptimizationConfig struct {
 	LazyLoading *LazyLoadingSettings `yaml:"lazy_loading,omitempty"`
+	// MinifyResults compacts JSON in result text blocks and drops duplicate
+	// structuredContent (lossless). Default true; set false to disable.
+	MinifyResults *bool `yaml:"minify_results,omitempty"`
 }
 
 type PeerConfig struct {

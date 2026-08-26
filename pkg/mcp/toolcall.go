@@ -50,6 +50,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 		return resp, nil
 	}
 
+	h.recordToolUse(serverName, toolName)
+
 	// The truncation marker tells the model to adjust max_response_chars, so
 	// this path must honor it too — and strip it before forwarding, unless
 	// the upstream tool declares the parameter itself.
@@ -102,9 +104,12 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 		}, nil
 	}
 
-	h.storeToolResult(serverName, toolName, params.Arguments, resp.Result)
-
 	result := resp.Result
+	if h.minifyResults {
+		result = minifyToolResult(result)
+	}
+	h.storeToolResult(serverName, toolName, params.Arguments, result)
+
 	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
 		result = truncateToolResult(result, capVal, explicitCap > 0)
 	}
@@ -177,6 +182,8 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	if resp := h.gateDispatch(req.ID, serverName, toolName); resp != nil {
 		return resp, nil
 	}
+
+	h.recordToolUse(serverName, toolName)
 
 	// A cap nested inside the tool arguments is a natural model slip (the
 	// marker never says where the parameter goes); honor and strip it the
@@ -296,9 +303,12 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 		}, nil
 	}
 
-	h.storeToolResult(serverName, toolName, arguments, resp.Result)
-
 	result := resp.Result
+	if h.minifyResults {
+		result = minifyToolResult(result)
+	}
+	h.storeToolResult(serverName, toolName, arguments, result)
+
 	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
 		result = truncateToolResult(result, capVal, explicitCap > 0)
 	}

@@ -53,6 +53,13 @@ type Handler struct {
 	// "server/tool"; resultCache replays identical calls within the TTL.
 	toolCacheTTLs map[string]time.Duration
 	resultCache   *resultCache
+	// minifyResults compacts JSON in result text blocks and drops duplicate
+	// structuredContent (lossless; default on).
+	minifyResults bool
+	// adaptiveWindows enables usage-adaptive stubs per server: tools unused
+	// for the window render name-only in lazy tools/list.
+	adaptiveWindows map[string]time.Duration
+	usage           *usageTracker
 }
 
 func NewHandler(p pool.ServerSource, logger *slog.Logger) *Handler {
@@ -66,6 +73,7 @@ func NewHandler(p pool.ServerSource, logger *slog.Logger) *Handler {
 		toolCache: &ToolCache{
 			tools: make(map[string][]Tool),
 		},
+		minifyResults: true,
 	}
 }
 

@@ -65,6 +65,7 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 			serverNames = append(serverNames, serverName)
 		}
 		sort.Strings(serverNames)
+		now := time.Now()
 		for _, serverName := range serverNames {
 			tools := make([]Tool, len(h.toolCache.tools[serverName]))
 			copy(tools, h.toolCache.tools[serverName])
@@ -80,6 +81,17 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 					InputSchema: tool.InputSchema,
 					ServerID:    serverName,
 				})
+				// Adaptive stubs: a tool unused for the configured window
+				// renders name-only. It stays callable and searchable (the
+				// full data lives in the tool cache), and one invocation
+				// restores the full stub on the next tools/list.
+				if h.stubDemoted(serverName, tool.Name, now) {
+					gatewayTools = append(gatewayTools, Tool{
+						Name:        stub.Name,
+						InputSchema: json.RawMessage(`{"type":"object"}`),
+					})
+					continue
+				}
 				gatewayTools = append(gatewayTools, Tool{
 					Name:        stub.Name,
 					Description: stub.Description,
@@ -94,6 +106,9 @@ func (h *Handler) handleToolsList(ctx context.Context, req *Request) (*Response,
 			}
 		}
 		h.toolCache.mu.RUnlock()
+		if h.usage != nil {
+			h.usage.maybeSave(true)
+		}
 
 		h.logger.Info("lazy loading: sent tool stubs to client", "count", len(gatewayTools))
 	}
