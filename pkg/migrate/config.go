@@ -31,24 +31,10 @@ type SQLiteVectorConfig struct {
 	Path string `yaml:"path"`
 }
 
-type QdrantVectorConfig struct {
-	URL        string `yaml:"url"`
-	APIKey     string `yaml:"api_key"`
-	APIKeyEnv  string `yaml:"api_key_env"`
-	Collection string `yaml:"collection"`
-}
-
-type PineconeVectorConfig struct {
-	Index     string `yaml:"index"`
-	APIKeyEnv string `yaml:"api_key_env"`
-}
-
 type VectorStoreConfig struct {
-	Backend   string                `yaml:"backend"`
-	Dimension int                   `yaml:"dimension"`
-	SQLite    *SQLiteVectorConfig   `yaml:"sqlite,omitempty"`
-	Qdrant    *QdrantVectorConfig   `yaml:"qdrant,omitempty"`
-	Pinecone  *PineconeVectorConfig `yaml:"pinecone,omitempty"`
+	Backend   string              `yaml:"backend"`
+	Dimension int                 `yaml:"dimension"`
+	SQLite    *SQLiteVectorConfig `yaml:"sqlite,omitempty"`
 }
 
 type CacheConfig struct {
@@ -399,12 +385,6 @@ func LoadConfig(ctx context.Context, path string) (*Config, error) {
 			if err == nil {
 				vs.SQLite.Path = filepath.Join(home, ".leanproxy", "cache", "vectors.db")
 			}
-		}
-		if vs.Qdrant != nil && vs.Qdrant.Collection == "" {
-			vs.Qdrant.Collection = "leanproxy_cache"
-		}
-		if vs.Pinecone != nil && vs.Pinecone.APIKeyEnv == "" {
-			vs.Pinecone.APIKeyEnv = "PINECONE_API_KEY"
 		}
 	}
 

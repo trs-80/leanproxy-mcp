@@ -11,9 +11,7 @@ import (
 type Backend string
 
 const (
-	BackendSQLite   Backend = "sqlite-vec"
-	BackendQdrant   Backend = "qdrant"
-	BackendPinecone Backend = "pinecone"
+	BackendSQLite Backend = "sqlite-vec"
 
 	defaultDim = 1536
 )
@@ -50,11 +48,9 @@ func NewStore(cfg *migrate.VectorStoreConfig, logger *slog.Logger) (Store, error
 	switch Backend(cfg.Backend) {
 	case BackendSQLite:
 		return newSQLiteStore(cfg.SQLite, dim, logger)
-	case BackendQdrant:
-		return newQdrantStore(cfg.Qdrant, dim, logger)
-	case BackendPinecone:
-		return newPineconeStore(cfg.Pinecone, logger)
 	default:
+		// Hosted backends (qdrant, pinecone) were removed in this fork:
+		// nothing ever ran them outside their own tests.
 		return nil, fmt.Errorf("vectordb: unknown backend %q", cfg.Backend)
 	}
 }

@@ -533,24 +533,17 @@ Semantic caching stores and retrieves tool responses based on vector similarity,
 ```yaml
 cache:
   vector_store:
-    backend: sqlite-vec  # sqlite-vec, qdrant, or pinecone
+    backend: sqlite-vec
     dimension: 1536
     sqlite:
       path: "~/.leanproxy/cache/vectors.db"
-    qdrant:
-      url: "http://localhost:6333"
-      api_key_env: "QDRANT_API_KEY"
-      collection: "leanproxy_cache"
-    pinecone:
-      index: "my-index"
-      api_key_env: "PINECONE_API_KEY"
 ```
 
 ### Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `backend` | string | `sqlite-vec` | Vector store backend (`sqlite-vec`, `qdrant`, `pinecone`) |
+| `backend` | string | `sqlite-vec` | Vector store backend (local SQLite; hosted backends removed in this fork) |
 | `dimension` | int | `1536` | Embedding vector dimension |
 
 ### Embedder Providers
