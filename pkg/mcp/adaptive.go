@@ -103,17 +103,19 @@ func (t *usageTracker) maybeSave(force bool) {
 		t.logger.Warn("adaptive stubs: write usage file failed", "path", path, "error", err)
 		return
 	}
-	if _, err := tmp.Write(data); err == nil {
-		err = tmp.Close()
-		if err == nil {
-			err = os.Rename(tmp.Name(), path)
+	writeErr := func() error {
+		if _, err := tmp.Write(data); err != nil {
+			tmp.Close()
+			return err
 		}
-	} else {
-		tmp.Close()
-	}
-	if err != nil {
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		return os.Rename(tmp.Name(), path)
+	}()
+	if writeErr != nil {
 		os.Remove(tmp.Name())
-		t.logger.Warn("adaptive stubs: write usage file failed", "path", path, "error", err)
+		t.logger.Warn("adaptive stubs: write usage file failed", "path", path, "error", writeErr)
 	}
 }
 
