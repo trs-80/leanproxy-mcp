@@ -188,6 +188,18 @@ chmod +x leanproxy-mcp && mv leanproxy-mcp ~/.local/bin/
 
 Verify downloads against `checksums.txt` (SHA-256) attached to the release.
 
+> **macOS:** the commands above use `curl`, which does not quarantine downloads. If you
+> instead download the tarball in a browser on **v0.10.0 or earlier**, macOS marks it
+> `com.apple.quarantine` and Gatekeeper refuses to run it — *"cannot be opened because
+> Apple cannot check it for malicious software."* Clear it with:
+>
+> ```bash
+> xattr -d com.apple.quarantine leanproxy-mcp
+> ```
+>
+> Releases after v0.10.0 are signed with a Developer ID certificate and notarized by
+> Apple, so this step is no longer needed.
+
 ```bash
 # ...or build from source (Go 1.25+)
 git clone https://github.com/trs-80/leanproxy-mcp && cd leanproxy-mcp && make build-local

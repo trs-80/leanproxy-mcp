@@ -18,6 +18,34 @@ builds:
       - -X github.com/mmornati/leanproxy-mcp/internal/version.Version={{.Version}}
       - -X github.com/mmornati/leanproxy-mcp/internal/version.Commit={{.Commit}}
       - -X github.com/mmornati/leanproxy-mcp/internal/version.BuildTime={{.Date}}
+# Developer ID signing + Apple notarization for the darwin binaries.
+# Without this, macOS quarantines browser-downloaded binaries and Gatekeeper
+# refuses them with "cannot be opened, could not scan for malware" — the Go
+# linker's ad-hoc signature is not enough.
+#
+# Gated on the secrets being present, so forks and local `goreleaser release
+# --snapshot` builds keep working unsigned instead of failing.
+#
+# Cert: "Developer ID Application: Aaron Johnson (CF4U8Z52PH)" — the same
+# Developer ID used by trs-80/crisismode. Note that crisismode notarizes via
+# Apple ID + app-specific password; goreleaser only speaks App Store Connect
+# API keys, so MACOS_NOTARY_* here is a .p8 key, not that Apple ID pair.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [leanproxy-mcp]
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        # Wait, so a rejected notarization fails the release instead of
+        # silently shipping binaries that Gatekeeper will still block.
+        wait: true
+        timeout: 20m
+
 archives:
   - id: default
     formats: ["tar.gz"]
