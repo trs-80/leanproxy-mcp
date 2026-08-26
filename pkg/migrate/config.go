@@ -116,6 +116,13 @@ type ToolsConfig struct {
 	// MaxResponseChars caps results per tool name (chars); overrides the
 	// global --max-response-chars default for that tool.
 	MaxResponseChars map[string]int `yaml:"max_response_chars,omitempty"`
+	// CacheTTL serves repeated identical calls (same tool, same arguments)
+	// from a short-lived in-memory cache instead of the upstream, per tool
+	// name (duration string, e.g. "30s"). Opt-in: list only idempotent
+	// read-style tools — a cached result is returned verbatim until the TTL
+	// lapses. Agent sessions repeat identical discovery calls constantly;
+	// each hit saves a full upstream round trip.
+	CacheTTL map[string]string `yaml:"cache_ttl,omitempty"`
 }
 
 type ReconnectConfig struct {

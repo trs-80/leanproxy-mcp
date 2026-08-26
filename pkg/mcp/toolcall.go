@@ -56,6 +56,20 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 	var explicitCap int
 	params.Arguments, explicitCap = h.extractResponseCap(serverName, toolName, params.Arguments)
 
+	// Cache lookup keys on the stripped arguments so calls differing only in
+	// max_response_chars share an entry; the cap is applied per call below.
+	if cached, ok := h.cachedToolResult(serverName, toolName, params.Arguments); ok {
+		result := cached
+		if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
+			result = truncateToolResult(result, capVal, explicitCap > 0)
+		}
+		return &Response{
+			JSONRPC: JSONRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+	}
+
 	// Perform MCP initialize handshake if not yet done for this server instance.
 	if !h.pool.IsServerMCPInitialized(serverName) {
 		h.logger.Debug("initializing MCP session with server", "name", serverName)
@@ -87,6 +101,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 			ID:      req.ID,
 		}, nil
 	}
+
+	h.storeToolResult(serverName, toolName, params.Arguments, resp.Result)
 
 	result := resp.Result
 	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
@@ -169,6 +185,21 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	arguments, nestedCap = h.extractResponseCap(serverName, toolName, arguments)
 	if explicitCap == 0 {
 		explicitCap = nestedCap
+	}
+
+	// Same cache as the direct tools/call path (same key: stripped
+	// arguments), so either dispatch surface can hit entries the other
+	// stored. A hit skips restart, handshake, and the upstream call.
+	if cached, ok := h.cachedToolResult(serverName, toolName, arguments); ok {
+		result := cached
+		if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
+			result = truncateToolResult(result, capVal, explicitCap > 0)
+		}
+		return &Response{
+			JSONRPC: JSONRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
 	}
 
 	h.logger.Info("invoke_tool called", "server", serverName, "tool", toolName)
@@ -264,6 +295,8 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 			ID:      req.ID,
 		}, nil
 	}
+
+	h.storeToolResult(serverName, toolName, arguments, resp.Result)
 
 	result := resp.Result
 	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {

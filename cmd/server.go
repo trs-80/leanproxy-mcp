@@ -918,5 +918,13 @@ func applyServerToolConfig(handler *mcp.Handler, cfg *migrate.Config) {
 		for tool, n := range srv.Tools.MaxResponseChars {
 			handler.SetToolMaxResponseChars(srv.Name, tool, n)
 		}
+		for tool, raw := range srv.Tools.CacheTTL {
+			ttl, err := time.ParseDuration(raw)
+			if err != nil {
+				slog.Warn("invalid tools.cache_ttl, ignoring", "server", srv.Name, "tool", tool, "value", raw, "error", err)
+				continue
+			}
+			handler.SetToolCacheTTL(srv.Name, tool, ttl)
+		}
 	}
 }

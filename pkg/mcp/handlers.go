@@ -49,6 +49,10 @@ type Handler struct {
 	// override defaultMaxResponseChars and are overridden by an explicit
 	// max_response_chars argument.
 	toolResponseCaps map[string]int
+	// toolCacheTTLs holds per-tool exact-match result-cache TTLs keyed
+	// "server/tool"; resultCache replays identical calls within the TTL.
+	toolCacheTTLs map[string]time.Duration
+	resultCache   *resultCache
 }
 
 func NewHandler(p pool.ServerSource, logger *slog.Logger) *Handler {
