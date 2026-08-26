@@ -102,7 +102,6 @@ type StdioServerV2 struct {
 	process         *exec.Cmd
 	pgid            int
 	stdin           io.WriteCloser
-	stdout          io.Reader
 	mu              sync.Mutex
 	requestCh       chan Request
 	state           int32
@@ -317,7 +316,6 @@ func (s *StdioServerV2) spawnLocked(ctx context.Context) error {
 		s.mu.Unlock()
 		return fmt.Errorf("pool: stdout pipe: %w", err)
 	}
-	s.stdout = stdoutR
 
 	stderrR, err := cmd.StderrPipe()
 	if err != nil {
@@ -369,7 +367,7 @@ func (s *StdioServerV2) spawnLocked(ctx context.Context) error {
 	s.wg.Add(1)
 	go s.waitForExit(genCtx, genStopCh, genStopOnce)
 	s.wg.Add(1)
-	go s.readResponses(genStopCh)
+	go s.readResponses(stdoutR, genStopCh)
 	s.wg.Add(1)
 	go s.runRequestLoop(genCtx, genStopCh)
 
@@ -589,9 +587,13 @@ func (s *StdioServerV2) restart(ctx context.Context) error {
 	return nil
 }
 
-func (s *StdioServerV2) readResponses(stopCh chan struct{}) {
+// readResponses takes its generation's stdout as a parameter, bound at spawn
+// time under the lock: reading it from a struct field raced the next
+// generation's spawn writing that field on crash-restart — and could latch
+// the wrong generation's pipe entirely.
+func (s *StdioServerV2) readResponses(stdout io.Reader, stopCh chan struct{}) {
 	defer s.wg.Done()
-	scanner := bufio.NewScanner(s.stdout)
+	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024), s.maxResponseSize)
 
 	for {
