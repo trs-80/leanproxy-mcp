@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -101,7 +102,13 @@ func (d *Dispatcher) SendAlert(alert interface{}) error {
 		return fmt.Errorf("webhook: marshal payload: %w", err)
 	}
 
-	resp, err := d.client.Post(d.webhookURL, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, d.webhookURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("webhook: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("webhook: post request: %w", err)
 	}

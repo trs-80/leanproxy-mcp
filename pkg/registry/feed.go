@@ -72,8 +72,15 @@ func NewFeedFetcher(logger *slog.Logger, cacheDir string) *FeedFetcher {
 		registryURL: DefaultRegistryURL,
 		cacheDir:    cacheDir,
 		logger:      logger,
-		client:      &http.Client{Timeout: 30 * time.Second},
-		interval:    DefaultSyncInterval,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 2,
+				IdleConnTimeout:     30 * time.Second,
+			},
+		},
+		interval: DefaultSyncInterval,
 	}
 }
 

@@ -14,18 +14,20 @@ import (
 )
 
 type HTTPTransportConfig struct {
-	Port           string
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	MaxHeaderBytes int
+	Port              string
+	ReadTimeout       time.Duration
+	ReadHeaderTimeout time.Duration
+	WriteTimeout      time.Duration
+	MaxHeaderBytes    int
 }
 
 func DefaultHTTPTransportConfig() HTTPTransportConfig {
 	return HTTPTransportConfig{
-		Port:           "8080",
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		MaxHeaderBytes: 1 << 20,
+		Port:              "8080",
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 
@@ -67,11 +69,12 @@ func NewHTTPTransport(config HTTPTransportConfig, opts ...HTTPTransportOption) *
 	t.handler = mux
 
 	t.server = &http.Server{
-		Addr:           ":" + t.config.Port,
-		Handler:        mux,
-		ReadTimeout:    t.config.ReadTimeout,
-		WriteTimeout:   t.config.WriteTimeout,
-		MaxHeaderBytes: t.config.MaxHeaderBytes,
+		Addr:              ":" + t.config.Port,
+		Handler:           mux,
+		ReadTimeout:       t.config.ReadTimeout,
+		ReadHeaderTimeout: t.config.ReadHeaderTimeout,
+		WriteTimeout:      t.config.WriteTimeout,
+		MaxHeaderBytes:    t.config.MaxHeaderBytes,
 	}
 
 	t.addr = ":" + t.config.Port

@@ -27,6 +27,10 @@ func TestHTTPTransportConfig_Defaults(t *testing.T) {
 	if config.MaxHeaderBytes != 1<<20 {
 		t.Errorf("expected max header bytes 1MB, got %d", config.MaxHeaderBytes)
 	}
+	// ReadHeaderTimeout must be set to protect against slowloris.
+	if config.ReadHeaderTimeout == 0 {
+		t.Error("expected ReadHeaderTimeout to be set; zero leaves the server vulnerable to slowloris attacks")
+	}
 }
 
 func TestStreamableHTTPHandler_PostMcp(t *testing.T) {

@@ -2,6 +2,9 @@ package federation
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
@@ -170,5 +173,37 @@ func TestFederationRouter_NotEnabled(t *testing.T) {
 	}
 	if result != "" {
 		t.Errorf("expected empty result when not enabled, got %q", result)
+	}
+}
+
+// TestConnect_DrainsBodyOnNonOK verifies that Connect drains the response body
+// before closing it on a non-200 response, so the TCP connection can be reused.
+func TestConnect_DrainsBodyOnNonOK(t *testing.T) {
+	bodyRead := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		bodyRead = true
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("service unavailable body"))
+	}))
+	defer srv.Close()
+
+	cfg := &migrate.FederationConfig{
+		Enabled: true,
+		Peers: []*migrate.PeerConfig{
+			{Name: "test-peer", URL: srv.URL},
+		},
+	}
+	pm, err := NewPeerManager(cfg, &testLogger{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	connectErr := pm.Connect(context.Background(), "test-peer")
+	if connectErr == nil {
+		t.Fatal("expected error from Connect on non-200 response")
+	}
+	if !bodyRead {
+		t.Error("expected server handler to be reached")
 	}
 }

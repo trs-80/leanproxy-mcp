@@ -481,3 +481,72 @@ func TestPineconeMockServer(t *testing.T) {
 	err = store.Delete(context.Background(), "doc1")
 	require.NoError(t, err)
 }
+
+// TestQdrantDrainsBodyOnError verifies that the qdrant store drains the
+// response body before closing it on error paths, so the underlying TCP
+// connection can be reused by the http.Transport pool.
+func TestQdrantDrainsBodyOnError(t *testing.T) {
+	bodyRead := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		switch r.URL.Path {
+		case "/collections/test":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		case "/collections/test/points/search":
+			bodyRead = true
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal error body"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	store := &qdrantStore{
+		client:     srv.Client(),
+		baseURL:    srv.URL,
+		collection: "test",
+		dim:        3,
+		logger:     discardLogger(),
+	}
+
+	_, err := store.Search(context.Background(), []float32{0.1, 0.2, 0.3}, 10)
+	require.Error(t, err)
+	assert.True(t, bodyRead, "server search handler should have been reached")
+	assert.Contains(t, err.Error(), "internal error body",
+		"draining for keep-alive must not lose the server's error text")
+
+	// A second request must not error due to a stale connection — the body
+	// must have been drained for keep-alive reuse to work.
+	_, _ = store.Search(context.Background(), []float32{0.1, 0.2, 0.3}, 10)
+}
+
+// TestPineconeDrainsBodyOnError mirrors the qdrant test for the pinecone store.
+func TestPineconeDrainsBodyOnError(t *testing.T) {
+	bodyRead := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		if r.URL.Path == "/query" {
+			bodyRead = true
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("pinecone error body"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	store := &pineconeStore{
+		client:  srv.Client(),
+		baseURL: srv.URL,
+		apiKey:  "test-key",
+		logger:  discardLogger(),
+	}
+
+	_, err := store.Search(context.Background(), []float32{0.1, 0.2, 0.3}, 10)
+	require.Error(t, err)
+	assert.True(t, bodyRead, "server query handler should have been reached")
+	assert.Contains(t, err.Error(), "pinecone error body",
+		"draining for keep-alive must not lose the server's error text")
+}

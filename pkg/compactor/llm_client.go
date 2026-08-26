@@ -43,6 +43,11 @@ func NewOpenAIClient(cfg OpenAIClientConfig, logger *slog.Logger) *OpenAIClient 
 		model:    cfg.Model,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        5,
+				MaxIdleConnsPerHost: 2,
+				IdleConnTimeout:     30 * time.Second,
+			},
 		},
 		logger:         logger,
 		retryBaseDelay: time.Second,

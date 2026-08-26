@@ -81,7 +81,21 @@ func (s *pineconeStore) doRequest(ctx context.Context, method, url string, body 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return s.client.Do(req)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	// Fully consume the body on non-2xx so the http.Transport can reuse the
+	// keep-alive TCP connection — but keep the bytes: readErrorBody still
+	// needs them for the error message (discarding them made every non-2xx
+	// error read "status 500: " with the server's explanation lost).
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		buf, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(buf))
+	}
+	return resp, nil
 }
 
 func (s *pineconeStore) readErrorBody(resp *http.Response) string {

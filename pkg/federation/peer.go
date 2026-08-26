@@ -116,7 +116,9 @@ func (pm *PeerManager) Connect(ctx context.Context, peerName string) error {
 		pm.updatePeerStatus(peerName, PeerStatusOffline)
 		return fmt.Errorf("failed to connect to peer: %w", err)
 	}
-	defer resp.Body.Close()
+	// Always drain and close — keeps the TCP connection alive for reuse.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
 		pm.updatePeerStatus(peerName, PeerStatusOnline)
