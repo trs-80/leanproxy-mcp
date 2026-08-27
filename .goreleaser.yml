@@ -36,7 +36,11 @@ builds:
 # API keys, so MACOS_NOTARY_* here is a .p8 key, not that Apple ID pair.
 notarize:
   macos:
-    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      # NOT isEnvSet: Actions always defines the var, as "" when the secret is
+      # missing, and isEnvSet is true for set-but-empty. `index .Env` returns ""
+      # for both absent and empty, and empty is falsey — so this stays off until
+      # a real certificate is present.
+    - enabled: '{{ if index .Env "MACOS_SIGN_P12" }}true{{ else }}false{{ end }}'
       ids: [leanproxy-mcp]
       sign:
         certificate: "{{ .Env.MACOS_SIGN_P12 }}"
