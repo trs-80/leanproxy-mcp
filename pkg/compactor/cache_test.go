@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,54 @@ func TestFileCache_SetAndGet(t *testing.T) {
 
 	if len(retrieved.Tools) != 1 {
 		t.Errorf("expected 1 tool, got %d", len(retrieved.Tools))
+	}
+}
+
+// A server name with path separators must not steer the write out of the
+// cache directory, and Invalidate must still find what Set wrote — the glob
+// prefix and the filename have to agree on the sanitized name.
+func TestFileCache_SanitizesServerName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cache, err := NewFileCache(tmpDir, nil)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+
+	const serverName = "../evil server"
+	manifest := &DistilledManifest{
+		ServerName:   serverName,
+		OriginalHash: "abc123",
+		Tools:        []DistilledTool{{Name: "tool1", Parameters: json.RawMessage("{}")}},
+		DistilledAt:  time.Now(),
+	}
+
+	ctx := context.Background()
+	if err := cache.Set(ctx, serverName, manifest); err != nil {
+		t.Fatalf("failed to set cache: %v", err)
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to read cache dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 cache file, got %d", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "___evil_server_") {
+		t.Errorf("cache file %q was not written under a sanitized name", entries[0].Name())
+	}
+
+	if err := cache.Invalidate(ctx, serverName); err != nil {
+		t.Fatalf("failed to invalidate: %v", err)
+	}
+
+	entries, err = os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to read cache dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected cache dir to be empty after invalidate, got %d files", len(entries))
 	}
 }
 

@@ -100,26 +100,19 @@ func TestFileCacheExpiry(t *testing.T) {
 	assert.Nil(t, gotTools)
 }
 
-func TestSanitizeFilename(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"simple", "simple"},
-		{"with-dash", "with-dash"},
-		{"with_underscore", "with_underscore"},
-		{"UPPERCASE", "UPPERCASE"},
-		{"with spaces", "with_spaces"},
-		{"with.dot", "with_dot"},
-		{"with@ special!", "with__special_"},
-	}
+// Filename sanitizing itself is covered by internal/cachefile; this checks
+// that the cache actually routes server names through it.
+func TestFileCacheSanitizesServerName(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := newFileCacheWithDir(nil, dir)
+	require.NoError(t, err)
 
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			result := sanitizeFilename(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
+	require.NoError(t, cache.SetTools("../escape me", []CachedTool{{Name: "t"}}))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "___escape_me.json", entries[0].Name())
 }
 
 func TestNoOpCache(t *testing.T) {

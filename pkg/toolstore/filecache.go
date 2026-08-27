@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 )
 
 const CacheValidDuration = 24 * time.Hour
@@ -54,14 +55,12 @@ func newFileCacheWithDir(logger *slog.Logger, cacheDir string) (*FileCache, erro
 	}
 
 	if cacheDir == "" {
-		usr, err := user.Current()
+		dir, err := cachefile.Dir("toolcache")
 		if err != nil {
-			return nil, fmt.Errorf("toolstore: get user home dir: %w", err)
+			return nil, fmt.Errorf("toolstore: %w", err)
 		}
-		cacheDir = filepath.Join(usr.HomeDir, ".config", "leanproxy", "toolcache")
-	}
-
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		cacheDir = dir
+	} else if err := os.MkdirAll(cacheDir, cachefile.DirPerm); err != nil {
 		return nil, fmt.Errorf("toolstore: create cache dir: %w", err)
 	}
 
@@ -77,7 +76,7 @@ func (c *FileCache) GetCacheDir() string {
 }
 
 func (c *FileCache) filePath(serverName string) string {
-	return filepath.Join(c.cacheDir, sanitizeFilename(serverName)+".json")
+	return filepath.Join(c.cacheDir, cachefile.SanitizeName(serverName)+".json")
 }
 
 func (c *FileCache) GetTools(serverName string) ([]CachedTool, error) {
@@ -146,7 +145,7 @@ func (c *FileCache) SetTools(serverName string, tools []CachedTool) error {
 		return fmt.Errorf("toolstore: marshal tools for cache: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, data, 0600); err != nil {
+	if err := cachefile.WriteAtomic(filePath, data, cachefile.FilePerm); err != nil {
 		return fmt.Errorf("toolstore: write cache file: %w", err)
 	}
 
@@ -214,16 +213,3 @@ func (c *NoOpCache) GetCacheDir() string {
 
 var _ Cache = (*FileCache)(nil)
 var _ Cache = (*NoOpCache)(nil)
-
-func sanitizeFilename(name string) string {
-	result := make([]byte, 0, len(name))
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
-			result = append(result, c)
-		} else {
-			result = append(result, '_')
-		}
-	}
-	return string(result)
-}
