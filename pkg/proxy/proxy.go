@@ -15,13 +15,6 @@ import (
 	"github.com/mmornati/leanproxy-mcp/pkg/errors"
 )
 
-type SchemaCache interface {
-	Get(key string) (json.RawMessage, bool)
-	Set(key string, schema json.RawMessage)
-	Delete(key string)
-	Clear()
-}
-
 type Proxy struct {
 	upstreamAddr string
 	conn         net.Conn
