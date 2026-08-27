@@ -22,37 +22,38 @@ builds:
       - -X github.com/mmornati/leanproxy-mcp/internal/version.Version={{.Version}}
       - -X github.com/mmornati/leanproxy-mcp/internal/version.Commit={{.Commit}}
       - -X github.com/mmornati/leanproxy-mcp/internal/version.BuildTime={{.Date}}
-# Developer ID signing + Apple notarization for the darwin binaries.
-# Without this, macOS quarantines browser-downloaded binaries and Gatekeeper
-# refuses them with "cannot be opened, could not scan for malware" — the Go
-# linker's ad-hoc signature is not enough.
+# Developer ID signing + Apple notarization for the darwin binaries is NOT
+# enabled. Without it, macOS quarantines browser-downloaded binaries and
+# Gatekeeper refuses them with "cannot be opened, could not scan for malware";
+# the Go linker's ad-hoc signature is not enough. README documents the
+# `xattr -d com.apple.quarantine` workaround.
 #
-# Gated on the secrets being present, so forks and local `goreleaser release
-# --snapshot` builds keep working unsigned instead of failing.
+# The config below is known-good against the goreleaser v2 schema but must stay
+# commented out until the credentials exist. `enabled` does NOT keep goreleaser
+# away from the certificate: with the secrets unset it still failed the whole
+# release with "need password to decode file", both with isEnvSet and with an
+# `index .Env` emptiness check (v0.10.1, runs on 04f8ee6 and 5b6166a).
 #
-# Cert: "Developer ID Application: Aaron Johnson (CF4U8Z52PH)" — the same
-# Developer ID used by trs-80/crisismode. Note that crisismode notarizes via
-# Apple ID + app-specific password; goreleaser only speaks App Store Connect
-# API keys, so MACOS_NOTARY_* here is a .p8 key, not that Apple ID pair.
-notarize:
-  macos:
-      # NOT isEnvSet: Actions always defines the var, as "" when the secret is
-      # missing, and isEnvSet is true for set-but-empty. `index .Env` returns ""
-      # for both absent and empty, and empty is falsey — so this stays off until
-      # a real certificate is present.
-    - enabled: '{{ if index .Env "MACOS_SIGN_P12" }}true{{ else }}false{{ end }}'
-      ids: [leanproxy-mcp]
-      sign:
-        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
-        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
-      notarize:
-        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
-        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
-        key: "{{ .Env.MACOS_NOTARY_KEY }}"
-        # Wait, so a rejected notarization fails the release instead of
-        # silently shipping binaries that Gatekeeper will still block.
-        wait: true
-        timeout: 20m
+# To turn on: set MACOS_SIGN_P12 / MACOS_SIGN_PASSWORD (Developer ID
+# Application cert, "Aaron Johnson (CF4U8Z52PH)" — the same one trs-80/crisismode
+# signs with) and MACOS_NOTARY_KEY / _KEY_ID / _ISSUER_ID (App Store Connect
+# Team Key, .p8, Developer role). goreleaser has no Apple-ID auth path, so
+# crisismode's APPLE_ID / APPLE_ID_PASSWORD / APPLE_TEAM_ID do not transfer.
+# Uncomment only once all five are set — an empty value breaks every release.
+#
+# notarize:
+#   macos:
+#     - enabled: true
+#       ids: [leanproxy-mcp]
+#       sign:
+#         certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+#         password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+#       notarize:
+#         issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+#         key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+#         key: "{{ .Env.MACOS_NOTARY_KEY }}"
+#         wait: true
+#         timeout: 20m
 
 archives:
   - id: default
