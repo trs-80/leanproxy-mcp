@@ -3,6 +3,7 @@ package compactor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,6 +97,106 @@ func TestFileCache_SanitizesServerName(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("expected cache dir to be empty after invalidate, got %d files", len(entries))
+	}
+}
+
+func distilled(name, hash string) *DistilledManifest {
+	return &DistilledManifest{
+		ServerName:   name,
+		OriginalHash: hash,
+		Tools:        []DistilledTool{{Name: "tool1", Parameters: json.RawMessage("{}")}},
+		DistilledAt:  time.Now(),
+	}
+}
+
+// Invalidate must take out exactly one server's files. Three ways it used not
+// to: an undelimited glob prefix ("foo_*" swallowing foo_bar's files), the
+// sanitizer aliasing distinct names onto one prefix, and the in-memory sweep
+// matching a raw prefix so "git" also hit "github-server".
+func TestFileCache_InvalidateOnlyTargetServer(t *testing.T) {
+	tests := []struct {
+		name    string
+		servers []string
+		target  string
+	}{
+		{"undelimited prefix", []string{"foo", "foo_bar"}, "foo"},
+		{"sanitize aliasing", []string{"a b", "a_b"}, "a b"},
+		{"raw prefix in memory", []string{"git", "github-server"}, "git"},
+		{"separator in name", []string{"a/b", "a_b"}, "a/b"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cache, err := NewFileCache(tmpDir, nil)
+			if err != nil {
+				t.Fatalf("failed to create cache: %v", err)
+			}
+			ctx := context.Background()
+
+			for i, s := range tc.servers {
+				hash := fmt.Sprintf("h%d", i)
+				if err := cache.Set(ctx, s, distilled(s, hash)); err != nil {
+					t.Fatalf("Set(%q): %v", s, err)
+				}
+			}
+
+			if err := cache.Invalidate(ctx, tc.target); err != nil {
+				t.Fatalf("Invalidate(%q): %v", tc.target, err)
+			}
+
+			for i, s := range tc.servers {
+				hash := fmt.Sprintf("h%d", i)
+				got, err := cache.Get(ctx, s, hash)
+				if err != nil {
+					t.Fatalf("Get(%q): %v", s, err)
+				}
+				if s == tc.target {
+					if got != nil {
+						t.Errorf("Get(%q) returned a manifest after Invalidate", s)
+					}
+					continue
+				}
+				if got == nil {
+					t.Errorf("Invalidate(%q) also evicted bystander %q", tc.target, s)
+				}
+			}
+		})
+	}
+}
+
+// The in-memory and on-disk halves must evict the same set: previously the
+// memory sweep matched raw names while the glob matched sanitized ones, so a
+// manifest could survive in memory with its backing file already deleted.
+func TestFileCache_InvalidateMemoryAndDiskAgree(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache, err := NewFileCache(tmpDir, nil)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := cache.Set(ctx, "a/b", distilled("a/b", "h1")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// Sanitizes to the same disk prefix as "a/b" but is a different server.
+	if err := cache.Invalidate(ctx, "a b"); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read cache dir: %v", err)
+	}
+	got, err := cache.Get(ctx, "a/b", "h1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected a/b's file to survive, found %d files", len(entries))
+	}
+	if got == nil {
+		t.Error("a/b was evicted from memory by an unrelated Invalidate")
 	}
 }
 
