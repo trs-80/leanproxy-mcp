@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 )
 
 type Cache interface {
@@ -33,14 +34,12 @@ func NewFileCache(cacheDir string, logger *slog.Logger) (*FileCache, error) {
 	}
 
 	if cacheDir == "" {
-		usr, err := user.Current()
+		dir, err := cachefile.Dir("distilled")
 		if err != nil {
-			return nil, fmt.Errorf("compactor: get user home dir: %w", err)
+			return nil, fmt.Errorf("compactor: %w", err)
 		}
-		cacheDir = filepath.Join(usr.HomeDir, ".config", "leanproxy", "distilled")
-	}
-
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		cacheDir = dir
+	} else if err := os.MkdirAll(cacheDir, cachefile.DirPerm); err != nil {
 		return nil, fmt.Errorf("compactor: create cache dir: %w", err)
 	}
 
@@ -56,9 +55,15 @@ func (c *FileCache) cacheKey(serverName, originalHash string) string {
 	return fmt.Sprintf("%x", hash)
 }
 
+// filePrefix is the shared leading component of every cache file for a
+// server. Invalidate globs on it, so it must stay in step with filePath.
+func (c *FileCache) filePrefix(serverName string) string {
+	return cachefile.SanitizeName(serverName) + "_"
+}
+
 func (c *FileCache) filePath(serverName string, originalHash string) string {
 	key := c.cacheKey(serverName, originalHash)
-	return filepath.Join(c.cacheDir, serverName+"_"+key[:16]+".json")
+	return filepath.Join(c.cacheDir, c.filePrefix(serverName)+key[:16]+".json")
 }
 
 func (c *FileCache) Get(ctx context.Context, serverName string, originalHash string) (*DistilledManifest, error) {
@@ -104,7 +109,7 @@ func (c *FileCache) Set(ctx context.Context, serverName string, manifest *Distil
 		return fmt.Errorf("compactor: marshal manifest for cache: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, data, 0600); err != nil {
+	if err := cachefile.WriteAtomic(filePath, data, cachefile.FilePerm); err != nil {
 		return fmt.Errorf("compactor: write cache file: %w", err)
 	}
 
@@ -125,7 +130,7 @@ func (c *FileCache) Invalidate(ctx context.Context, serverName string) error {
 	}
 	c.mu.Unlock()
 
-	pattern := filepath.Join(c.cacheDir, serverName+"_*.json")
+	pattern := filepath.Join(c.cacheDir, c.filePrefix(serverName)+"*.json")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return fmt.Errorf("compactor: glob cache files: %w", err)
