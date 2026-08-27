@@ -9,7 +9,6 @@ package cachefile
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 )
 
@@ -26,12 +25,25 @@ const FilePerm os.FileMode = 0600
 // Dir returns the cache subdirectory named sub under the user's LeanProxy
 // config root, creating it if needed. Callers wrap the error with their own
 // package prefix.
+//
+// Home comes from os.UserHomeDir, which reads $HOME, rather than user.Current,
+// which reads the passwd database and ignores it. Release binaries are built
+// CGO_ENABLED=0, so os/user takes its pure-Go path and fails for a UID with no
+// passwd entry — `docker run --user 1000:1000` against a distroless image, for
+// instance. Both callers downgrade that failure to a warning and fall back to
+// a no-op cache, so the process would silently stop caching entirely.
 func Dir(sub string) (string, error) {
-	usr, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get user home dir: %w", err)
 	}
-	dir := filepath.Join(usr.HomeDir, Root, sub)
+	return DirUnder(home, sub)
+}
+
+// DirUnder is Dir with an explicit home directory, so tests can exercise the
+// path layout without touching the developer's real home.
+func DirUnder(home, sub string) (string, error) {
+	dir := filepath.Join(home, Root, sub)
 	if err := os.MkdirAll(dir, DirPerm); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
@@ -61,6 +73,14 @@ func SanitizeName(name string) string {
 // complete new ones — never a half-written file from an interrupted write.
 // The rename is atomic on Unix; on Windows os.Rename is not, which is
 // acceptable here because a torn cache file is re-fetched rather than fatal.
+//
+// It deliberately does not fsync. Surviving power loss would need
+// write -> fsync(file) -> rename -> fsync(dir), and on darwin File.Sync issues
+// F_FULLFSYNC, a full drive barrier: measured on a 29KB manifest that is
+// ~4.7ms per write against ~140us without, and callers persist one file per
+// configured server before the listener opens. A cache whose contents are
+// re-fetched on a bad read does not need that trade; the rename alone provides
+// the visibility guarantee above.
 func WriteAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
@@ -82,9 +102,6 @@ func WriteAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	}
 	if _, err = f.Write(data); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err = f.Sync(); err != nil {
-		return fmt.Errorf("sync temp file: %w", err)
 	}
 	if err = f.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)

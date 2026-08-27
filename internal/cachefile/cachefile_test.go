@@ -85,15 +85,36 @@ func TestWriteAtomicLeavesNoTempFile(t *testing.T) {
 	assert.Equal(t, "cache.json", entries[0].Name())
 }
 
-// A failed write must leave the previous contents intact and clean up after
-// itself: that is the whole point of going through a temp file.
-func TestWriteAtomicFailureKeepsPreviousContents(t *testing.T) {
+// A failed write must leave THE TARGET's previous contents intact. The write
+// has to be made to fail on the very file being asserted on: pointing it at
+// some other path would leave this passing even for a naive truncating
+// os.WriteFile, which is the implementation the temp file exists to avoid.
+func TestWriteAtomicFailureKeepsTargetIntact(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the directory permissions this test relies on")
+	}
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cache.json")
 	require.NoError(t, WriteAtomic(path, []byte("original"), FilePerm))
 
-	// Renaming onto a directory fails, exercising the cleanup path after the
-	// temp file has been fully written.
+	// Read and execute but not write, so creating the sibling temp file fails.
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	require.Error(t, WriteAtomic(path, []byte("replacement"), FilePerm))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(data), "failed write clobbered the target")
+}
+
+// The other half: the temp file is written in full and only the final swap
+// fails, which must still leave no debris behind.
+func TestWriteAtomicFailedRenameCleansUp(t *testing.T) {
+	dir := t.TempDir()
+
+	// Renaming onto an existing directory fails.
 	blocked := filepath.Join(dir, "blocked.json")
 	require.NoError(t, os.Mkdir(blocked, 0o700))
 
@@ -101,18 +122,10 @@ func TestWriteAtomicFailureKeepsPreviousContents(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rename temp file")
 
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, "original", string(data))
-
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	for _, name := range names {
-		assert.False(t, strings.Contains(name, ".tmp"), "temp file %q left behind", name)
+		assert.False(t, strings.Contains(e.Name(), ".tmp"), "temp file %q left behind", e.Name())
 	}
 }
 
@@ -123,15 +136,34 @@ func TestWriteAtomicMissingDirectory(t *testing.T) {
 	assert.Contains(t, err.Error(), "create temp file")
 }
 
-func TestDirCreatesSubdirectory(t *testing.T) {
-	dir, err := Dir("cachefile-test")
-	require.NoError(t, err)
-	t.Cleanup(func() { os.RemoveAll(dir) })
+// Exercised through DirUnder so the test never touches the developer's real
+// home. Dir itself only supplies os.UserHomeDir, covered separately below.
+func TestDirUnderCreatesSubdirectory(t *testing.T) {
+	home := t.TempDir()
 
-	assert.True(t, strings.HasSuffix(dir, filepath.Join(Root, "cachefile-test")))
+	dir, err := DirUnder(home, "cachefile-test")
+	require.NoError(t, err)
+
+	assert.Equal(t, filepath.Join(home, Root, "cachefile-test"), dir)
 
 	info, err := os.Stat(dir)
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 	assert.Equal(t, DirPerm, info.Mode().Perm())
+}
+
+// Dir must resolve home from $HOME. user.Current reads the passwd database
+// and ignores it, which is what made this untestable and what breaks a
+// CGO_ENABLED=0 binary running as a UID with no passwd entry.
+func TestDirHonorsHOME(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir, err := Dir("cachefile-test")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, Root, "cachefile-test"), dir)
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
 }
