@@ -161,7 +161,8 @@ func BenchmarkSchemaTax_Native(b *testing.B) {
 	router := routerListJSON()
 	routerTokens := estimator.EstimateTokens(string(router))
 
-	b.ReportMetric(float64(routerTokens), "router_tokens")
+	// No metric on the parent: it only runs sub-benchmarks, so it has no
+	// result line of its own. routerTokens is reported per sub-benchmark.
 	for _, srv := range snap.Servers {
 		if !srv.Reachable {
 			continue
@@ -195,9 +196,6 @@ func BenchmarkSchemaTax_Native(b *testing.B) {
 			}
 			payload, _ := json.Marshal(envelope)
 			tokens := estimator.EstimateTokens(string(payload))
-			b.ReportMetric(float64(tokens), "native_tokens")
-			b.ReportMetric(float64(routerTokens), "router_tokens")
-			b.ReportMetric(1.0-float64(routerTokens)/float64(tokens), "savings_pct")
 
 			// The benchmark loop just re-estimates; the result is the
 			// single-iteration accounting. We use b.N to allow
@@ -206,6 +204,13 @@ func BenchmarkSchemaTax_Native(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				_ = estimator.EstimateTokens(string(payload))
 			}
+			b.StopTimer()
+
+			// Reported after the loop: b.ResetTimer deletes user metrics,
+			// so reporting beside the measurement drops them silently.
+			b.ReportMetric(float64(tokens), "native_tokens")
+			b.ReportMetric(float64(routerTokens), "router_tokens")
+			b.ReportMetric(1.0-float64(routerTokens)/float64(tokens), "savings_pct")
 
 			// Emit a one-line result when -v is passed.
 			b.Logf("server=%s tools=%d native_tokens=%d router_tokens=%d savings=%.1f%%",
@@ -229,13 +234,15 @@ func BenchmarkSchemaTax_LeanProxyRouter(b *testing.B) {
 	estimator := reporter.NewEstimator()
 
 	tokens := estimator.EstimateTokens(string(payload))
-	b.ReportMetric(float64(tokens), "router_tokens")
-	b.ReportMetric(float64(len(payload)), "router_bytes")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = estimator.EstimateTokens(string(payload))
 	}
+	b.StopTimer()
+
+	b.ReportMetric(float64(tokens), "router_tokens")
+	b.ReportMetric(float64(len(payload)), "router_bytes")
 
 	b.Logf("router payload: %d bytes, %d tokens (1 token ≈ 4 chars)",
 		len(payload), tokens)
@@ -255,11 +262,13 @@ func BenchmarkSchemaTax_StubSchema(b *testing.B) {
 	payload, _ := json.Marshal(stub)
 	tokens := estimator.EstimateTokens(string(payload))
 
-	b.ReportMetric(float64(tokens), "stub_tokens")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = estimator.EstimateTokens(string(payload))
 	}
+	b.StopTimer()
+
+	b.ReportMetric(float64(tokens), "stub_tokens")
 
 	b.Logf("stub schema: %d bytes, %d tokens (production registry.ToolStub)", len(payload), tokens)
 }
@@ -397,9 +406,6 @@ func benchmarkSessionReplay(b *testing.B, spec sessionSpec) {
 		b.Skip("no reachable servers in snapshot — skipping session replay")
 	}
 	savings := 1.0 - float64(leanTotal)/float64(nativeTotal)
-	b.ReportMetric(float64(nativeTotal), "native_tokens")
-	b.ReportMetric(float64(leanTotal), "lean_tokens")
-	b.ReportMetric(savings*100, "savings_pct")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -409,6 +415,11 @@ func benchmarkSessionReplay(b *testing.B, spec sessionSpec) {
 		_ = stubTokens
 		_ = savings
 	}
+	b.StopTimer()
+
+	b.ReportMetric(float64(nativeTotal), "native_tokens")
+	b.ReportMetric(float64(leanTotal), "lean_tokens")
+	b.ReportMetric(savings*100, "savings_pct")
 
 	b.Logf("session=%s prompts=%d native=%d lean=%d savings=%.1f%%",
 		spec.Name, len(spec.Prompts), nativeTotal, leanTotal, savings*100)
@@ -462,13 +473,14 @@ func BenchmarkLargePayload_NFR2(b *testing.B) {
 	}
 	tokens := estimator.EstimateTokens(string(payload))
 
-	b.ReportMetric(float64(len(payload))/1024/1024, "payload_mb")
-	b.ReportMetric(float64(tokens), "tokens")
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = estimator.EstimateTokens(string(payload))
 	}
+	b.StopTimer()
+
+	b.ReportMetric(float64(len(payload))/1024/1024, "payload_mb")
+	b.ReportMetric(float64(tokens), "tokens")
 }
 
 // --- G. Throughput against mock MCP (AC 16-3: ≥500 q/s) ----------------
