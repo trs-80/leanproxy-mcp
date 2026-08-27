@@ -64,6 +64,12 @@ func newFileCacheWithDir(logger *slog.Logger, cacheDir string) (*FileCache, erro
 		return nil, fmt.Errorf("toolstore: create cache dir: %w", err)
 	}
 
+	if removed, err := cachefile.SweepTemp(cacheDir); err != nil {
+		logger.Debug("toolstore: could not sweep abandoned temp files", "error", err)
+	} else if removed > 0 {
+		logger.Debug("toolstore: swept abandoned temp files", "count", removed)
+	}
+
 	return &FileCache{
 		cacheDir: cacheDir,
 		logger:   logger,

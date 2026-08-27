@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,8 +126,60 @@ func TestWriteAtomicFailedRenameCleansUp(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	for _, e := range entries {
-		assert.False(t, strings.Contains(e.Name(), ".tmp"), "temp file %q left behind", e.Name())
+		assert.False(t, strings.HasPrefix(e.Name(), tempPrefix), "temp file %q left behind", e.Name())
 	}
+}
+
+// The temp name must not scale with the target's, or swapping os.WriteFile
+// for WriteAtomic silently lowers the longest usable server name. NAME_MAX is
+// 255 on both APFS and ext4; the name-derived pattern this replaced cost
+// len(target)+15 and started failing at 241 bytes.
+func TestWriteAtomicLongFilename(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, n := range []int{240, 241, 250, 255} {
+		name := strings.Repeat("a", n-len(".json")) + ".json"
+		require.Len(t, name, n)
+		path := filepath.Join(dir, name)
+
+		require.NoError(t, WriteAtomic(path, []byte("payload"), FilePerm),
+			"WriteAtomic rejected a %d-byte name that the filesystem allows", n)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "payload", string(data))
+		require.NoError(t, os.Remove(path))
+	}
+}
+
+func TestSweepTempRemovesAbandonedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// A temp file from a write that never finished, aged past the cutoff.
+	stale := filepath.Join(dir, tempPrefix+"123456")
+	require.NoError(t, os.WriteFile(stale, []byte("half-written"), FilePerm))
+	old := time.Now().Add(-2 * tempMaxAge)
+	require.NoError(t, os.Chtimes(stale, old, old))
+
+	// A real cache file, and a temp file young enough to be a live write.
+	keep := filepath.Join(dir, "server.json")
+	require.NoError(t, os.WriteFile(keep, []byte(`{}`), FilePerm))
+	fresh := filepath.Join(dir, tempPrefix+"999999")
+	require.NoError(t, os.WriteFile(fresh, []byte("in flight"), FilePerm))
+
+	removed, err := SweepTemp(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+
+	assert.NoFileExists(t, stale)
+	assert.FileExists(t, keep, "swept a real cache file")
+	assert.FileExists(t, fresh, "swept a temp file that may still be in flight")
+}
+
+func TestSweepTempMissingDirectory(t *testing.T) {
+	removed, err := SweepTemp(filepath.Join(t.TempDir(), "no-such-dir"))
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
 }
 
 func TestWriteAtomicMissingDirectory(t *testing.T) {

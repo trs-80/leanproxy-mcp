@@ -44,6 +44,12 @@ func NewFileCache(cacheDir string, logger *slog.Logger) (*FileCache, error) {
 		return nil, fmt.Errorf("compactor: create cache dir: %w", err)
 	}
 
+	if removed, err := cachefile.SweepTemp(cacheDir); err != nil {
+		logger.Debug("compactor: could not sweep abandoned temp files", "error", err)
+	} else if removed > 0 {
+		logger.Debug("compactor: swept abandoned temp files", "count", removed)
+	}
+
 	return &FileCache{
 		cacheDir: cacheDir,
 		logger:   logger,

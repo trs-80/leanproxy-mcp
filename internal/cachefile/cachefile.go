@@ -7,9 +7,12 @@
 package cachefile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Root is the per-user directory holding every LeanProxy cache subdirectory.
@@ -21,6 +24,19 @@ const DirPerm os.FileMode = 0700
 
 // FilePerm is the mode for cache files, owner-only for the same reason.
 const FilePerm os.FileMode = 0600
+
+// tempPrefix leads every temp file WriteAtomic creates. It deliberately does
+// not embed the target's name: os.CreateTemp appends up to 10 digits, so a
+// name-derived pattern cost len(target)+15 bytes and pushed long-but-legal
+// targets past NAME_MAX (255), turning writes that plain os.WriteFile still
+// accepted into hard failures. A constant prefix also gives SweepTemp
+// something unambiguous to match.
+const tempPrefix = ".leanproxy-tmp"
+
+// tempMaxAge is how long a temp file must have gone untouched before SweepTemp
+// treats it as abandoned. Writes complete in well under a millisecond, so this
+// is a wide margin against reaping a concurrent writer's file in flight.
+const tempMaxAge = time.Hour
 
 // Dir returns the cache subdirectory named sub under the user's LeanProxy
 // config root, creating it if needed. Callers wrap the error with their own
@@ -48,6 +64,54 @@ func DirUnder(home, sub string) (string, error) {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
 	return dir, nil
+}
+
+// SweepTemp removes temp files abandoned in dir by a WriteAtomic that never
+// reached its rename — a SIGKILL, OOM kill, or power loss in between. The
+// deferred cleanup inside WriteAtomic only covers an in-process error return,
+// and nothing else reaps these: the caches enumerate "*.json" and invalidate
+// by name, so a leading-dot temp is invisible to `cache --clear` and
+// `compactor rebuild` alike. leanproxy runs as a stdio daemon that clients
+// terminate by killing the process, so without this they accumulate forever.
+//
+// Only files untouched for at least tempMaxAge are removed, leaving a
+// concurrent writer's in-flight temp alone. Callers treat failure as
+// non-fatal: a cache that cannot tidy up still works.
+func SweepTemp(dir string) (removed int, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read cache dir: %w", err)
+	}
+
+	cutoff := time.Now().Add(-tempMaxAge)
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), tempPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue // vanished under us; nothing to do
+		}
+		if info.ModTime().After(cutoff) {
+			continue // possibly a write in flight
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, err)
+			continue
+		}
+		removed++
+	}
+	if len(errs) > 0 {
+		return removed, fmt.Errorf("remove temp files: %w", errors.Join(errs...))
+	}
+	return removed, nil
 }
 
 // SanitizeName maps an arbitrary server name onto a single safe filename
@@ -83,7 +147,7 @@ func SanitizeName(name string) string {
 // the visibility guarantee above.
 func WriteAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
+	f, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
