@@ -1,4 +1,8 @@
 version: 2
+# Pinned: goreleaser otherwise defaults project_name to the GitHub repo name,
+# which would rename the binary and every release asset if the repo is renamed
+# (it became leanproxy-mcp-bob on 2026-08-27). The tool is still leanproxy-mcp.
+project_name: leanproxy-mcp
 before:
   hooks:
     - go mod download

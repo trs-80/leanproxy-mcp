@@ -6,9 +6,9 @@ site_author: "Massimo Mornati"
 site_url: https://trs-80.github.io/leanproxy-mcp
 
 # Repository settings
-repo_name: trs-80/leanproxy-mcp
-repo_url: https://github.com/trs-80/leanproxy-mcp
-edit_uri: https://github.com/trs-80/leanproxy-mcp/edit/main/docs/
+repo_name: trs-80/leanproxy-mcp-bob
+repo_url: https://github.com/trs-80/leanproxy-mcp-bob
+edit_uri: https://github.com/trs-80/leanproxy-mcp-bob/edit/main/docs/
 
 # Copyright
 copyright: "Copyright &copy; 2026 Massimo Mornati"
