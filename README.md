@@ -188,8 +188,8 @@ chmod +x leanproxy-mcp && mv leanproxy-mcp ~/.local/bin/
 
 Verify downloads against `checksums.txt` (SHA-256) attached to the release.
 
-> **macOS:** the commands above use `curl`, which does not quarantine downloads. If you
-> instead download the tarball in a browser on **v0.10.0 or earlier**, macOS marks it
+> **macOS:** the commands above use `curl`, which does not quarantine downloads — prefer
+> them. If you download the tarball in a browser instead, macOS marks it
 > `com.apple.quarantine` and Gatekeeper refuses to run it — *"cannot be opened because
 > Apple cannot check it for malicious software."* Clear it with:
 >
@@ -197,8 +197,8 @@ Verify downloads against `checksums.txt` (SHA-256) attached to the release.
 > xattr -d com.apple.quarantine leanproxy-mcp
 > ```
 >
-> Releases after v0.10.0 are signed with a Developer ID certificate and notarized by
-> Apple, so this step is no longer needed.
+> The release binaries are not yet signed with a Developer ID certificate or notarized,
+> so this applies to every release to date.
 
 ```bash
 # ...or build from source (Go 1.25+)
