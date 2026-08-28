@@ -770,9 +770,18 @@ import (
 
 // ballastPoints is the sweep. The production setup contributes roughly 10 real
 // tools (codebase-memory 8 after its include filter, context7 2), so the sweep
-// deliberately reaches well past that to find where the proxy's floor plus
-// round trips stop being worth paying.
-var ballastPoints = []int{0, 25, 50, 100, 200}
+// reaches well past that to find where the proxy's floor plus round trips stop
+// being worth paying.
+//
+// The small points are not padding. Task 3 measured the router arm's fixed
+// wrapper floor at ~2174 B, which EXCEEDS a native payload below roughly 8
+// tools — the router crossover sits between 4 and 8, and that crossover is the
+// breakeven this harness exists to find. A sweep starting at 25 would step
+// straight over it.
+//
+// Zero is deliberately absent: with no servers configured the proxy has nothing
+// to proxy and `Capture(ArmRouter, ...)` fails with "read initialize: EOF".
+var ballastPoints = []int{2, 4, 8, 25, 50, 100, 200}
 
 func TestResidencySweep(t *testing.T) {
 	if testing.Short() {
