@@ -306,8 +306,18 @@ class TestLoadTasks(unittest.TestCase):
                 abbench.load_tasks(p)
 
 
+def _tool_message(name, content="irrelevant content"):
+    """A role='tool' message's `data`, shaped like real recorded history:
+    `json_extract(data,'$.toolUsage.signature.name')` on real rows."""
+    return json.dumps({
+        "role": "tool",
+        "content": content,
+        "toolUsage": {"signature": {"id": "tooluse_x", "name": name, "arguments": {}}},
+    })
+
+
 class TestReadTaskResult(unittest.TestCase):
-    def _db(self, d):
+    def _db(self, d, tool_messages=None):
         import sqlite3
         p = os.path.join(d, "bob.db")
         conn = sqlite3.connect(p)
@@ -318,9 +328,15 @@ class TestReadTaskResult(unittest.TestCase):
             ("t1", json.dumps({"input": 1000, "output": 50, "cacheRead": 800,
                                "cacheWrite": 200, "cost": 0.21, "contextTokens": 900})),
         )
-        for i, role in enumerate(["user", "assistant", "tool", "assistant"]):
-            data = json.dumps({"role": role, "name": "codebase-memory_get_architecture"}) \
-                if role == "tool" else json.dumps({"role": role})
+        if tool_messages is None:
+            tool_messages = [_tool_message("codebase-memory_get_architecture")]
+        rows = (
+            [("user", json.dumps({"role": "user"}))]
+            + [("tool", m) for m in tool_messages]
+            + [("assistant", json.dumps({"role": "assistant"})),
+               ("assistant", json.dumps({"role": "assistant"}))]
+        )
+        for i, (role, data) in enumerate(rows):
             conn.execute("insert into messages values (?,?,?,?)", ("t1", role, data, i))
         conn.commit()
         conn.close()
@@ -344,6 +360,142 @@ class TestReadTaskResult(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             res = abbench.read_task_result(self._db(d), "t1", "get_architecture")
             self.assertTrue(res["succeeded"])
+
+    def test_does_not_match_tool_name_appearing_only_in_another_calls_content(self):
+        """C2 regression: the expected tool's name can legitimately appear in
+        some OTHER tool call's result content or arguments (e.g. a
+        search_code hit on the literal string 'get_architecture'). That must
+        not count as success — only the CALLED tool's own name may match."""
+        with tempfile.TemporaryDirectory() as d:
+            messages = [_tool_message(
+                "codebase-memory_search_code",
+                content="found a reference to get_architecture in docs/index.md",
+            )]
+            db = self._db(d, tool_messages=messages)
+            res = abbench.read_task_result(db, "t1", "get_architecture")
+            self.assertFalse(res["succeeded"])
+
+    def test_raises_on_unparseable_tool_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d, tool_messages=["not json"])
+            with self.assertRaises(ValueError):
+                abbench.read_task_result(db, "t1", "get_architecture")
+
+    def test_raises_on_tool_message_missing_toolusage_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d, tool_messages=[json.dumps({"role": "tool", "content": "x"})])
+            with self.assertRaises(ValueError):
+                abbench.read_task_result(db, "t1", "get_architecture")
+
+
+class TestRunTask(unittest.TestCase):
+    def _db(self, d):
+        import sqlite3
+        p = os.path.join(d, "bob.db")
+        conn = sqlite3.connect(p)
+        conn.execute(
+            "create table tasks (id text, first_message text, env text, created_at int)"
+        )
+        conn.commit()
+        conn.close()
+        return p
+
+    def _insert_task(self, db_path, task_id, first_message, workspace, created_at):
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "insert into tasks values (?,?,?,?)",
+            (task_id, first_message, json.dumps({"workspace": workspace}), created_at),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_returns_the_correlated_task_id(self):
+        """Normal case: bob run's subprocess call is faked; the row that
+        appears afterward matches this run's cwd and prompt, so it's trusted."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d)
+
+            def fake_run(*args, **kwargs):
+                self._insert_task(db, "new-id", "do the thing", "/repo", 100)
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(abbench.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(abbench.time, "sleep"):
+                    task_id = abbench.run_task("do the thing", "/repo", db, timeout=5)
+            self.assertEqual(task_id, "new-id")
+
+    def test_raises_when_a_racing_unrelated_row_appears(self):
+        """C1 regression: an ambient Bob session (interactive, or another arm
+        of the same sweep) inserts a newer row in the same repo during the
+        poll window. It must not be attributed to this run — raise instead
+        of silently returning the wrong id."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d)
+
+            def fake_run(*args, **kwargs):
+                self._insert_task(db, "someone-elses-id", "an unrelated prompt", "/repo", 100)
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(abbench.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(abbench.time, "sleep"):
+                    with self.assertRaises(RuntimeError):
+                        abbench.run_task("do the thing", "/repo", db, timeout=5)
+
+    def test_raises_when_racing_row_has_a_different_workspace(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d)
+
+            def fake_run(*args, **kwargs):
+                self._insert_task(db, "other-repo-id", "do the thing", "/other-repo", 100)
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(abbench.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(abbench.time, "sleep"):
+                    with self.assertRaises(RuntimeError):
+                        abbench.run_task("do the thing", "/repo", db, timeout=5)
+
+    def test_raises_on_timeout_when_no_row_appears(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d)
+
+            with mock.patch.object(
+                abbench.subprocess, "run",
+                return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+            ):
+                fast_clock = iter([0, 40])  # first check inside deadline, second past it
+                with mock.patch.object(abbench.time, "time", side_effect=lambda: next(fast_clock, 40)):
+                    with mock.patch.object(abbench.time, "sleep"):
+                        with self.assertRaises(RuntimeError):
+                            abbench.run_task("do the thing", "/repo", db, timeout=5)
+
+    def test_still_correlates_a_matching_row_even_after_a_nonzero_exit(self):
+        """The db row, not the process exit code, is ground truth: a `bob
+        run` that itself exits non-zero may still have recorded a real task
+        (e.g. the model errored out after making some tool calls). If a
+        correctly-correlated row shows up, return it rather than raising
+        merely because the exit code was non-zero."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d)
+
+            def fake_run(*args, **kwargs):
+                self._insert_task(db, "new-id", "do the thing", "/repo", 100)
+                return mock.Mock(returncode=1, stdout="", stderr="boom")
+
+            with mock.patch.object(abbench.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(abbench.time, "sleep"):
+                    task_id = abbench.run_task("do the thing", "/repo", db, timeout=5)
+            self.assertEqual(task_id, "new-id")
 
 
 if __name__ == "__main__":

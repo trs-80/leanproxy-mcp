@@ -334,22 +334,37 @@ def load_tasks(path: str) -> list:
     return tasks
 
 
-def _latest_task_id(db_path: str) -> str:
+def _latest_task_row(db_path: str):
+    """(id, first_message, workspace) for the newest task row, or None.
+
+    Ordered by (created_at desc, id desc) to match this table's own index
+    (idx_tasks_created) and give a deterministic tiebreak when two rows share
+    a millisecond.
+    """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        row = conn.execute("select id from tasks order by created_at desc limit 1").fetchone()
+        return conn.execute(
+            "select id, first_message, json_extract(env, '$.workspace') "
+            "from tasks order by created_at desc, id desc limit 1"
+        ).fetchone()
     finally:
         conn.close()
-    return row[0] if row else None
 
 
 def run_task(prompt: str, cwd: str, db_path: str, timeout: int = 900) -> str:
     """Run one prompt through Bob headlessly and return the new task id.
 
-    The id is recovered by diffing the newest task row before and after, since
-    `bob run` does not print it in a machine-readable form.
+    The id is recovered by diffing the newest task row before and after,
+    since `bob run` does not print it in a machine-readable form. Bob's db is
+    shared with any other session touching this repo — the operator running
+    Bob interactively, or another arm of this same sweep — so a bare "newest
+    row differs from `before`" check can silently attribute an unrelated
+    session's task, and its costs, to this run. The candidate is therefore
+    verified against both `workspace` and `first_message` before being
+    trusted; any mismatch raises rather than guessing.
     """
-    before = _latest_task_id(db_path)
+    before = _latest_task_row(db_path)
+    before_id = before[0] if before else None
 
     proc = subprocess.run(
         ["bob", "run", prompt],
@@ -362,15 +377,53 @@ def run_task(prompt: str, cwd: str, db_path: str, timeout: int = 900) -> str:
     # Poll briefly: Bob writes the task row asynchronously on completion.
     deadline = time.time() + 30
     while time.time() < deadline:
-        after = _latest_task_id(db_path)
-        if after and after != before:
-            return after
+        after = _latest_task_row(db_path)
+        if after and after[0] != before_id:
+            task_id, first_message, workspace = after
+            if workspace != cwd or (first_message or "") != prompt:
+                raise RuntimeError(
+                    f"newest task row {task_id!r} does not match this run — "
+                    f"got workspace={workspace!r} first_message={first_message!r}, "
+                    f"expected workspace={cwd!r} first_message={prompt!r}; "
+                    f"likely a concurrent Bob session in this repo raced the "
+                    f"poll — refusing to attribute its costs to this run"
+                )
+            return task_id
         time.sleep(1)
 
     raise RuntimeError(
         f"no new task row appeared after `bob run` (exit {proc.returncode})\n"
         f"stdout: {proc.stdout[-500:]}\nstderr: {proc.stderr[-500:]}"
     )
+
+
+def _tool_call_name(data: str) -> str:
+    """The called tool's name from a role='tool' message's `data` JSON.
+
+    The real identifier lives at `toolUsage.signature.name` — verified
+    against actual recorded history
+    (`json_extract(data,'$.toolUsage.signature.name')`). Matching the whole
+    `data` blob instead (as an earlier version of this function did) is
+    wrong: it can also hit the tool's result `content` or call `arguments`,
+    so `succeeded` can go true because the expected tool's name merely
+    appeared in some *other* tool's output text.
+
+    A row that isn't valid JSON, or is JSON but missing this path, raises
+    rather than being silently treated as "no match": a shape this doesn't
+    recognise could just as easily be the exact tool being looked for, and
+    reporting failure for a task that actually succeeded would be a worse
+    outcome than a loud error naming the row.
+    """
+    try:
+        obj = json.loads(data)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"tool message is not valid JSON: {data[:200]!r}") from exc
+    try:
+        return obj["toolUsage"]["signature"]["name"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"tool message missing toolUsage.signature.name: {data[:200]!r}"
+        ) from exc
 
 
 def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
@@ -380,10 +433,13 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     that re-sends the whole conversation, which is exactly the cost lazy
     loading trades residency for.
 
-    Success matches `expect_tool` as a substring of the recorded tool message,
-    because the same tool is named `codebase-memory_get_architecture` behind the
-    proxy and `get_architecture` natively. Substring rather than equality keeps
-    the arms comparable; fixtures should therefore name the unprefixed tool.
+    `succeeded` means "the model reached for the right tool" — it matches
+    `expect_tool` as a substring of the CALLED TOOL'S NAME ONLY (see
+    `_tool_call_name`), not "the task completed correctly": a tool call's
+    own `toolUsage.signature.isError` is not consulted. Substring, not
+    equality, because the same tool is named `codebase-memory_get_architecture`
+    behind the proxy and `get_architecture` natively; fixtures name the
+    unprefixed form so both arms compare.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
@@ -402,7 +458,8 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     finally:
         conn.close()
 
-    succeeded = any(expect_tool in (r[0] or "") for r in tool_rows)
+    tool_names = [_tool_call_name(r[0]) for r in tool_rows if r[0]]
+    succeeded = any(expect_tool in name for name in tool_names)
 
     return {
         "task_id": task_id,
