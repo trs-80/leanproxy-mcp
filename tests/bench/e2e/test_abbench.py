@@ -679,10 +679,17 @@ class TestMainIncrementalPersistence(unittest.TestCase):
             with mock.patch.object(abbench, "run_task", side_effect=fake_run_task), \
                  mock.patch.object(abbench, "read_task_result", side_effect=fake_read_task_result), \
                  mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                # Scoped to the k=0 ballast point: this test is about the
+                # incremental-persistence mechanism, not the ballast sweep
+                # dimension. The default "0,100" sweep would now (correctly,
+                # see I2) refuse upfront without --mock-bin before run_task
+                # is ever called, which would prevent this scenario from
+                # ever reaching the interrupt.
                 with self.assertRaises(KeyboardInterrupt):
                     abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
                                   "--lp-config", lp_cfg_path, "--db", db_path,
-                                  "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true"])
+                                  "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                  "--ballast-points", "0"])
 
             # the first task's record must already be on disk even though
             # the sweep never finished and no post-loop write ever ran.
@@ -758,9 +765,35 @@ class TestMainIncrementalPersistence(unittest.TestCase):
                 self.assertEqual(rec["ballast_tools"], 0)
 
 
+class TestBallastShape(unittest.TestCase):
+    """Direct coverage of `_ballast_shape`, the C1 fix: nominal and actual
+    ballast counts must never diverge — a point that can't divide evenly
+    across the fixed server count raises instead of silently flooring to a
+    value that could collide with a different point's pairing tag."""
+
+    def test_zero_is_the_true_baseline(self):
+        self.assertEqual(abbench._ballast_shape(0), (0, 0, 0))
+
+    def test_divisible_point_matches_nominal_exactly(self):
+        self.assertEqual(abbench._ballast_shape(100), (2, 50, 100))
+
+    def test_the_original_collision_point_now_raises_instead_of_flooring_to_zero(self):
+        """C1 regression: `tools=1` used to floor to `actual=0`, tagging
+        identically to the true zero-ballast point while actually attaching
+        two live mock servers. It must now raise, not collide."""
+        with self.assertRaises(ValueError):
+            abbench._ballast_shape(1)
+
+    def test_odd_point_raises(self):
+        with self.assertRaises(ValueError):
+            abbench._ballast_shape(101)
+
+
 class TestBallastSweep(unittest.TestCase):
-    """main()'s ballast dimension: the mock-bin gate, and per-point tagging
-    with the ACTUAL (not nominal) ballast tool count."""
+    """main()'s ballast dimension: the mock-bin gate (validated once, before
+    any point runs), the mock-bin executable check, the C1 divisibility
+    guard applied to the whole sweep before any point runs, and per-point
+    tagging with the actual ballast tool count."""
 
     def _setup(self, d, task_ids):
         bob_cfg_path = os.path.join(d, "mcp.json")
@@ -778,13 +811,22 @@ class TestBallastSweep(unittest.TestCase):
                 {"id": tid, "prompt": tid, "expect_tool": "get_architecture"}
                 for tid in task_ids
             ]}, fh)
-        return bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path
+
+        # A real, executable file — I3 checks isfile + X_OK, and this is
+        # never actually invoked in these tests (run_task is mocked), so its
+        # content doesn't matter.
+        mock_bin_path = os.path.join(d, "mockmcp")
+        with open(mock_bin_path, "w") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(mock_bin_path, 0o755)
+
+        return bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, mock_bin_path
 
     def test_nonzero_ballast_point_without_mock_bin_refuses(self):
         import unittest.mock as mock
 
         with tempfile.TemporaryDirectory() as d:
-            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path = self._setup(d, ["t1"])
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, _ = self._setup(d, ["t1"])
 
             with mock.patch.object(abbench, "run_task") as run_task_mock, \
                  mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
@@ -800,14 +842,77 @@ class TestBallastSweep(unittest.TestCase):
             with open(bob_cfg_path) as fh:
                 self.assertEqual(json.load(fh), {"mcpServers": {}})
 
-    def test_sweep_tags_records_with_actual_not_nominal_ballast_count(self):
-        """101 // 2 == 50, so the actual total is 100, not the nominal 101 —
-        the record must carry the actual count, same lesson Layer 1 already
-        learned about integer division."""
+    def test_mock_bin_gate_fires_before_any_point_runs_not_just_the_nonzero_one(self):
+        """I2 regression: with the DEFAULT `--ballast-points "0,100"` and no
+        `--mock-bin`, the old code let the whole k=0 point run for real
+        (spending money) before the k=100 point's guard fired. The gate must
+        now look at the whole points list before anything runs, so k=0 must
+        not run either."""
         import unittest.mock as mock
 
         with tempfile.TemporaryDirectory() as d:
-            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path = self._setup(d, ["t1"])
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, _ = self._setup(d, ["t1"])
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                # no --ballast-points override: exercises the real default,
+                # "0,100"
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true"])
+
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+            with open(bob_cfg_path) as fh:
+                self.assertEqual(json.load(fh), {"mcpServers": {}})
+
+    def test_mock_bin_that_is_not_an_executable_file_refuses(self):
+        """I3 regression: a truthy but bogus --mock-bin (typo'd path, or a
+        non-executable file) must be caught before any point runs, not
+        discovered mid-sweep when Bob fails to spawn it."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, _ = self._setup(d, ["t1"])
+            bogus = os.path.join(d, "does-not-exist")
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "0,100", "--mock-bin", bogus])
+
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+
+    def test_non_divisible_point_in_a_multi_point_sweep_raises_before_any_point_runs(self):
+        """C1 regression at the main() level: `--ballast-points "0,1"` used
+        to run k=0 for real, then run k=1 for real and silently overwrite
+        k=0's records under the same "@0" tag. It must now raise before
+        either point runs."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, mock_bin = self._setup(d, ["t1"])
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                with self.assertRaises(ValueError):
+                    abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                  "--lp-config", lp_cfg_path, "--db", db_path,
+                                  "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                  "--ballast-points", "0,1", "--mock-bin", mock_bin])
+
+            run_task_mock.assert_not_called()
+            with open(bob_cfg_path) as fh:
+                self.assertEqual(json.load(fh), {"mcpServers": {}})
+
+    def test_sweep_tags_records_with_the_actual_ballast_count(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, mock_bin = self._setup(d, ["t1"])
             calls = {"n": 0}
 
             def fake_run_task(prompt, cwd, db, timeout=900):
@@ -825,7 +930,7 @@ class TestBallastSweep(unittest.TestCase):
                 rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
                                     "--lp-config", lp_cfg_path, "--db", db_path,
                                     "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
-                                    "--ballast-points", "0,101", "--mock-bin", "/tmp/mockmcp"])
+                                    "--ballast-points", "0,100", "--mock-bin", mock_bin])
 
             self.assertEqual(rc, 0)
             out_files = os.listdir(out_dir)
@@ -846,7 +951,7 @@ class TestBallastSweep(unittest.TestCase):
         import unittest.mock as mock
 
         with tempfile.TemporaryDirectory() as d:
-            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path = self._setup(d, ["t1"])
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, mock_bin = self._setup(d, ["t1"])
 
             costs = iter([0.10, 0.08, 0.06, 0.50, 0.48, 0.46])  # native,router,lazy x k=0,k=100
 
@@ -864,7 +969,7 @@ class TestBallastSweep(unittest.TestCase):
                 rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
                                     "--lp-config", lp_cfg_path, "--db", db_path,
                                     "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
-                                    "--ballast-points", "0,100", "--mock-bin", "/tmp/mockmcp"])
+                                    "--ballast-points", "0,100", "--mock-bin", mock_bin])
             self.assertEqual(rc, 0)
 
             out_files = os.listdir(out_dir)
@@ -875,6 +980,24 @@ class TestBallastSweep(unittest.TestCase):
             self.assertEqual(d_lazy["pairs"], 2)
             self.assertIn("t1@0", d_lazy["deltas"])
             self.assertIn("t1@100", d_lazy["deltas"])
+
+
+class TestArmConfigBallastCollision(unittest.TestCase):
+    """I4 regression: ballast key names must never silently overwrite a
+    real server already present in the operator's config."""
+
+    def test_ballast_name_colliding_with_a_real_server_raises(self):
+        base = {"mcpServers": {"ballast0": {"command": "/real/server", "args": []}}}
+        ballast = abbench.ballast_servers("/tmp/mockmcp", 1, 50)
+        with self.assertRaises(ValueError):
+            abbench.arm_config("native", "/new/bin", base, ballast)
+
+    def test_non_colliding_ballast_names_are_unaffected(self):
+        base = {"mcpServers": {"some-other-server": {"command": "/real/server", "args": []}}}
+        ballast = abbench.ballast_servers("/tmp/mockmcp", 1, 50)
+        cfg = abbench.arm_config("native", "/new/bin", base, ballast)
+        self.assertIn("ballast0", cfg["mcpServers"])
+        self.assertIn("some-other-server", cfg["mcpServers"])
 
 
 if __name__ == "__main__":

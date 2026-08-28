@@ -240,6 +240,13 @@ def arm_config(arm: str, leanproxy_bin: str, base: dict, ballast: dict = None) -
     cfg = copy.deepcopy(base)
     servers = cfg.setdefault("mcpServers", {})
     if ballast:
+        collisions = sorted(set(ballast) & set(servers))
+        if collisions:
+            raise ValueError(
+                f"ballast server name(s) {collisions} already present in the "
+                f"operator's mcpServers — refusing to silently overwrite a "
+                f"real server for the duration of this arm's live run"
+            )
         servers.update(copy.deepcopy(ballast))
 
     if arm == "native":
@@ -592,6 +599,38 @@ def _persist_records(path: str, records: list) -> None:
     os.replace(tmp, path)
 
 
+BALLAST_SERVERS_PER_POINT = 2  # fixed server count for any tools>0 ballast point
+
+
+def _ballast_shape(tools: int) -> tuple:
+    """(servers, per, actual) for one ballast sweep point.
+
+    `tools == 0` is the true baseline: zero ballast servers, no `--mock-bin`
+    required. Any `tools > 0` is split across a fixed server count; if it
+    doesn't divide evenly this raises rather than silently flooring `actual`
+    to a value that could collide with a different point's tag — e.g.
+    `tools=1` flooring to `actual=0` would tag identically to the true
+    zero-ballast point while actually attaching two live (if toolless) mock
+    servers, and `paired_deltas` would silently let one point's records
+    overwrite the other's under the shared key. Nominal and actual counts
+    must never diverge, not merely "usually agree" (Layer 1 already learned
+    this the hard way for residency).
+    """
+    if tools == 0:
+        return 0, 0, 0
+    servers = BALLAST_SERVERS_PER_POINT
+    per = tools // servers
+    actual = servers * per
+    if actual != tools:
+        raise ValueError(
+            f"ballast point {tools} does not divide evenly across "
+            f"{servers} servers (would floor to actual={actual}, per-server="
+            f"{per}) — choose a multiple of {servers}, e.g. {actual} or "
+            f"{actual + servers}"
+        )
+    return servers, per, actual
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="bench-results")
@@ -633,13 +672,20 @@ def main(argv=None) -> int:
     out_path = os.path.join(args.out, f"e2e-live-{stamp}.json")
 
     points = [int(x) for x in args.ballast_points.split(",") if x.strip()]
-    for tools in points:
-        servers = 2 if tools > 0 else 0
-        per = tools // servers if servers else 0
-        actual = servers * per
-        if servers and not args.mock_bin:
-            print("--mock-bin is required for non-zero ballast points", file=sys.stderr)
-            return 2
+
+    # Validate the WHOLE sweep before running any of it: a gate that only
+    # fires when a later point is reached still lets every earlier point run
+    # for real first, spending money on live model calls before the sweep is
+    # known to be well-formed.
+    if any(t > 0 for t in points) and not args.mock_bin:
+        print("--mock-bin is required for non-zero ballast points", file=sys.stderr)
+        return 2
+    if args.mock_bin and not (os.path.isfile(args.mock_bin) and os.access(args.mock_bin, os.X_OK)):
+        print(f"--mock-bin {args.mock_bin!r} is not an executable file", file=sys.stderr)
+        return 2
+    shapes = [(tools, _ballast_shape(tools)) for tools in points]  # raises before any run
+
+    for tools, (servers, per, actual) in shapes:
         ballast = ballast_servers(args.mock_bin, servers, per)
 
         for arm in ARMS:
