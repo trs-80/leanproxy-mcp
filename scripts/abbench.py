@@ -1602,13 +1602,25 @@ def main(argv=None) -> int:
                     return 2
 
             for arm in ARMS:
-                cfg = arm_config(
-                    arm, leanproxy_bin, bob_cfg,
-                    ballast=ballast_bob if arm == "native" else None,
-                    direct_servers=direct_servers if arm == "native" else None,
-                    lp_config_path=lp_arm_cfg,
-                    log_file=os.path.join(workdir, f"leanproxy-{arm}-{actual}.log"),
-                )
+                # arm_config raises ValueError on a name collision (e.g. a
+                # *disabled* Bob entry whose name matches a proxied server —
+                # detect_confound deliberately skips disabled entries, so
+                # such a config reaches here). native runs first and this is
+                # a static property of the config, so it fails here before
+                # any task in the sweep has spent anything; catching it turns
+                # what was a raw traceback into the same kind of clean,
+                # exit-2 refusal as every other check on this path (N-3).
+                try:
+                    cfg = arm_config(
+                        arm, leanproxy_bin, bob_cfg,
+                        ballast=ballast_bob if arm == "native" else None,
+                        direct_servers=direct_servers if arm == "native" else None,
+                        lp_config_path=lp_arm_cfg,
+                        log_file=os.path.join(workdir, f"leanproxy-{arm}-{actual}.log"),
+                    )
+                except ValueError as exc:
+                    print(f"Refusing to run — {arm} arm: {exc}", file=sys.stderr)
+                    return 2
                 with ConfigSwap(args.bob_config, cfg):
                     for t in tasks:
                         task_key = f"{t['id']}@{actual}"

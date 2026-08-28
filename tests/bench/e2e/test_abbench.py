@@ -1800,5 +1800,47 @@ class TestDirtyRepoGuard(unittest.TestCase):
             self.assertTrue(run_task_mock.called)
 
 
+class TestDisabledEntryNameCollision(unittest.TestCase):
+    """N-3: detect_confound deliberately skips disabled Bob entries (they are
+    exactly what the native arm's directly-attached copy is meant to
+    replace), so a disabled entry whose name collides with a proxied server
+    passes the confound check and the whole preflight, then used to blow up
+    with a raw traceback in arm_config's native-arm _attach — main() must
+    turn that into the same clean, exit-2 refusal as every other check on
+    this path, not a traceback."""
+
+    def _run(self, d):
+        import unittest.mock as mock
+        bob_cfg_path = os.path.join(d, "mcp.json")
+        lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+        tasks_path = os.path.join(d, "tasks.json")
+        with open(bob_cfg_path, "w") as fh:
+            # "codebase-memory" collides with LP_STDIO's proxied server name,
+            # but is disabled — detect_confound and preflight both pass it.
+            json.dump({"mcpServers": {"codebase-memory": {"command": "/bin/false",
+                                                           "disabled": True}}}, fh)
+        with open(lp_cfg_path, "w") as fh:
+            fh.write(LP_STDIO)
+        with open(tasks_path, "w") as fh:
+            json.dump({"tasks": [{"id": "t1", "prompt": "p",
+                                  "expect_tool": "get_architecture"}]}, fh)
+        with mock.patch.object(abbench, "run_task") as run_task_mock, \
+             mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+            rc = abbench.main(["--out", os.path.join(d, "out"),
+                               "--bob-config", bob_cfg_path,
+                               "--lp-config", lp_cfg_path,
+                               "--db", os.path.join(d, "bob.db"),
+                               "--tasks", tasks_path, "--cwd", d,
+                               "--leanproxy-bin", "/usr/bin/true",
+                               "--skip-preflight", "--ballast-points", "0"])
+        return rc, run_task_mock
+
+    def test_collision_with_a_disabled_entry_refuses_cleanly_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, run_task_mock = self._run(d)
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
