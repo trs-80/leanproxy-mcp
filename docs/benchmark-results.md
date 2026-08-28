@@ -213,3 +213,145 @@ cpu: Apple M4
 | Go | 1.25+ |
 | Host | Apple M4, darwin/arm64 |
 | Date | 2026-08-12 |
+
+## 8. Modelled numbers vs. measured numbers
+
+The figures at the top of this document and in the README come from
+`tests/bench/token_economy_bench_test.go`, which is a **schema-tax accounting
+model**, not an end-to-end measurement. It never starts the proxy. Three of its
+modelling choices bias toward LeanProxy:
+
+1. It charges the proxy arm for the router plus *one* tool stub — the tool
+   actually invoked. A model cannot know which tool it needs before seeing the
+   list, so in practice it carries the whole manifest every turn.
+2. Discovery round trips are absent from the model entirely. They are the
+   proxy's principal cost.
+3. Payloads are synthesised and padded to hit average byte counts, rather than
+   captured from real servers.
+
+Those numbers are correct for what they measure: the size of the tool-schema
+slice. They are not a claim about session cost.
+
+## 9. The e2e harness
+
+`tests/bench/e2e` measures instead of modelling. It starts the real proxy over
+stdio and captures the exact `tools/list` bytes a client receives.
+
+### 9.1 Three arms, not two
+
+| Arm | Config | tools/list contents | Discovery round trip |
+|---|---|---|---|
+| `native` | servers configured directly in the client | every full schema | none |
+| `router` | `server run --stdio` | 3 wrapper tools | **required** |
+| `lazy` | `server run --stdio --lazy-tools` | one compact stub per tool | none |
+
+`router` is lazy loading: minimal residency, paid for with an extra turn.
+`lazy` is schema compression: moderate residency, no extra turn. They have
+opposite cost structures and must not be conflated.
+
+### 9.2 Running it
+
+```bash
+make bench-e2e        # Layer 1: residency sweep across all arms. No LLM, no coins.
+
+# Layer 2: live A/B through real sessions. SPENDS COINS. The target refuses
+# to run unless the caller supplies LEANPROXY_AB_LIVE=1 itself — that is not
+# a default the Makefile sets for you:
+LEANPROXY_AB_LIVE=1 make bench-e2e-live
+
+# Layer 3: join Layer 1 + Layer 2 into a net-tokens-per-task table:
+python3 scripts/abreport.py bench-results/e2e-residency-*.json \
+                            bench-results/e2e-live-*.json
+```
+
+`make bench-e2e` sweeps ballast tool counts `{2, 4, 8, 25, 50, 100, 200}`
+(`ballastPoints` in `tests/bench/e2e/residency_test.go`), split across 2
+synthetic servers. Integer division across those servers means the count
+actually created can come in one short of the nominal point — e.g. 25 tools
+over 2 servers yields 24, not 25 — and the harness reports the actual count
+it built, not the nominal sweep point, which is why `bench-results/e2e-
+residency-*.json` shows `ballast_tools: 24` rather than `25`. The low end of
+the sweep (2, 4, 8) is not padding: it exists specifically to catch two
+different crossovers in that range (see §9.3).
+
+### 9.3 Reading the residency numbers (measured, `bench-results/e2e-residency-*.json`)
+
+These are Layer 1 only — no live model was run to produce them:
+
+- `router` is **flat**: 2174 bytes / 544 estimated tokens at every ballast
+  level from 2 to 200 tools. Its wrapper schema (3 tools) does not grow with
+  the catalogue size.
+- `native` costs **~676-677 bytes/tool** at every measured level (677 B/tool
+  at 100 and 200 tools).
+- `lazy` costs **~276-277 bytes/tool** at every measured level (277 B/tool at
+  100 and 200 tools).
+- `lazy/native` is flat at **~0.409** across the sweep (e.g. 27,691 / 67,705
+  bytes at 100 tools).
+- `router`'s fixed floor exceeds `native` only below ~4 tools: at 2 tools
+  native is 1377 B vs. router's 2174 B; by 4 tools native (2729 B) has
+  already overtaken router.
+- The full three-way ordering `router < lazy < native` first holds at 8
+  ballast tools (2174 < 2219 < 5433 B); at 4 tools it does not (`lazy` at
+  1115 B undercuts `router`'s floor).
+
+### 9.4 `scripts/abreport.py` — Layer 3
+
+`abreport.py` joins the Layer 1 residency sweep with whatever Layer 2 live
+data exists into `net_tokens = residency_tokens × turns + output_tokens` per
+task, and prints the breakeven ballast level for each proxy arm: the point
+past which it costs fewer tokens per task than `native`. That line is the
+answer this harness was built to produce — but it only prints where live data
+exists to back it, and it enforces several honesty rules rather than
+smoothing over gaps in the data:
+
+- Every row is labelled **`measured`** (a live run exists at that exact
+  ballast level) or **`derived`** (the turn count is borrowed from the
+  nearest ballast level that does have live data). The label is a column in
+  the table and a tag on every verdict line, never hidden.
+- A live run that completed without finding the expected tool
+  (`succeeded: False`) is excluded from turn/output averages — including it
+  would let a badly-failing arm look cheapest, since a model that gives up
+  early posts a low turn count. The success rate that exclusion implies is
+  printed next to every verdict, and below `MIN_SUCCESS_RATE_FOR_VERDICT`
+  (0.5) no saves/costs-more number is printed at all for that arm/level.
+- A `derived` verdict is stress-tested against a ±1 turn error in the
+  borrowed turn count and tagged `FLIPS` if that single-turn perturbation
+  changes the verdict's sign, `stable` otherwise.
+- Comparisons are paired by task id wherever both arms share one — an
+  unpaired mean over a handful of tasks whose per-task cost spans an order of
+  magnitude reports task difficulty, not arm effect. Fewer than 2 paired (or,
+  falling back to unpaired, per-arm) samples and no verdict is printed —
+  a single pair cannot disagree with itself.
+- An arm with no usable live data anywhere is omitted from the table, and the
+  omission is named and explained rather than left for the reader to notice.
+
+As of this writing **no live run has been performed**: `bench-results/`
+contains only `e2e-residency-*.json` files. Layer 2 and Layer 3 are built and
+tested against fixtures but have produced no real A/B data yet — do not read
+anything in this document as a live-session finding until `make bench-e2e-live`
+has actually been run and its output joined with `abreport.py`.
+
+### 9.5 Two caveats in the residency numbers
+
+**`residency_tokens` is an estimate, not a real tokenizer count.** It is
+`ceil(payload_bytes / 4)` from `reporter.NewEstimator()` — the same `chars/4`
+heuristic used everywhere else in this document (§2.1), not tokenizer output
+from any specific model. Treat every `_tokens` figure in §9.3 as a byte count
+in tokenizer's clothing.
+
+**The synthetic ballast tools bias the measurement toward lazy mode's
+weaker half.** Each ballast tool carries a realistic ~568-character
+description (`BallastToolDescription` in `tests/bench/e2e/ballast.go`,
+sized against real tool caches — see below) but a deliberately trivial
+one-property `inputSchema`, so `compactSchema` (LeanProxy's structural
+schema compaction) never has anything to compact. Concretely: for one
+ballast tool, the JSON-encoded description is 570 of the tool object's 675
+bytes — about **84%** of every ballast tool is description text. Real tool
+schemas measured from this repo's own tool caches
+(`~/.config/leanproxy/toolcache/`) put description at a much smaller share
+of total bytes: `codebase-memory.json` averages 1449 bytes/tool with a
+610-character median description (~42%); `context7.json` averages 2240
+bytes/tool with a 1218-character median description (~54%). So the harness
+measures the description-truncation half of `lazy` mode's saving fairly, but
+**understates** the schema-compaction half — real servers with richer
+`inputSchema` objects would show `lazy` saving more than this sweep reports.
