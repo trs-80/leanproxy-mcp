@@ -33,7 +33,9 @@ func BallastSpecs(mockBin string, servers, toolsPerServer int) []Spec {
 }
 
 // WriteConfig writes a leanproxy_servers.yaml covering specs into dir and
-// returns its path. The shape matches tests/e2e/helper_test.go:writeSimpleConfig.
+// returns its path. The shape matches tests/e2e/helper_test.go:writeSimpleConfig,
+// except command is quoted (%q, like args already were) so a command path
+// containing a colon-space sequence still parses as valid YAML.
 func WriteConfig(dir string, specs []Spec) (string, error) {
 	var b strings.Builder
 	b.WriteString("version: \"1\"\nservers:\n")
@@ -42,7 +44,7 @@ func WriteConfig(dir string, specs []Spec) (string, error) {
 		b.WriteString("    transport: stdio\n")
 		b.WriteString("    enabled: true\n")
 		b.WriteString("    stdio:\n")
-		b.WriteString(fmt.Sprintf("      command: %s\n", s.Command))
+		b.WriteString(fmt.Sprintf("      command: %q\n", s.Command))
 		b.WriteString("      args: [")
 		for i, a := range s.Args {
 			if i > 0 {
