@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/mmornati/leanproxy-mcp/internal/netguard"
 )
 
 type LLMClient interface {
@@ -57,6 +59,13 @@ func NewOpenAIClient(cfg OpenAIClientConfig, logger *slog.Logger) *OpenAIClient 
 func (c *OpenAIClient) Distill(ctx context.Context, manifest RawManifest) (*DistilledManifest, error) {
 	if c.endpoint == "" {
 		return nil, fmt.Errorf("compactor: LLM endpoint not configured: %w", ctx.Err())
+	}
+	// Re-checked here, not only in Config.Validate: a caller can build
+	// OpenAIClientConfig directly and never load a config file. This is the
+	// last point before the manifest leaves the process, so it is the one
+	// check that cannot be routed around.
+	if err := netguard.CheckInferenceEndpoint(c.endpoint); err != nil {
+		return nil, fmt.Errorf("compactor: refusing to distill: %w", err)
 	}
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("compactor: LLM API key not configured: %w", ctx.Err())

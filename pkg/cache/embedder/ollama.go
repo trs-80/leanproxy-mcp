@@ -21,6 +21,10 @@ const (
 	defaultOllamaModel = "nomic-embed-text"
 	ollamaEmbedPath    = "/api/embed"
 	ollamaTimeout      = 5 * time.Second
+
+	// maxErrorBodyBytes caps how much of an error response is read into a
+	// message. Moved here when the hosted embedder was removed.
+	maxErrorBodyBytes = 4 * 1024
 )
 
 type OllamaConfig struct {
