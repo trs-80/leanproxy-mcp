@@ -540,6 +540,153 @@ class TestPairedDeltas(unittest.TestCase):
         self.assertNotIn("w", out["deltas"])
         self.assertEqual(out["pairs"], 2)
 
+    def test_single_pair_is_not_consistent_even_without_disagreement(self):
+        """A lone pair can't disagree with itself, so treating it as
+        'consistent' would print a confident-looking signed number from a
+        single, possibly noisy, data point — exactly the point-estimate-
+        from-noise outcome pairing exists to prevent. Reachable in practice:
+        if four of five tasks fail to pair, the one survivor must not look
+        like a finding."""
+        recs = [
+            {"arm": "native", "task": "solo", "cost_usd": 1.00},
+            {"arm": "lazy",   "task": "solo", "cost_usd": 0.50},
+        ]
+        out = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
+        self.assertEqual(out["pairs"], 1)
+        self.assertFalse(out["consistent"])
+        self.assertEqual(out["verdict"], "insufficient_pairs")
+
+    def test_verdict_distinguishes_no_pairs_from_consistent_from_inconsistent(self):
+        """`verdict` must let a downstream consumer tell "no disagreement
+        among enough pairs" from "only one pair existed" without having to
+        cross-reference `pairs` itself."""
+        out_none = abbench.paired_deltas([], "native", "lazy", "cost_usd")
+        self.assertEqual(out_none["verdict"], "no_pairs")
+
+        out_consistent = abbench.paired_deltas(self.RECORDS, "native", "lazy", "cost_usd")
+        self.assertEqual(out_consistent["verdict"], "consistent")
+
+        recs = self.RECORDS + [
+            {"arm": "native", "task": "c", "cost_usd": 0.10},
+            {"arm": "lazy",   "task": "c", "cost_usd": 0.30},
+        ]
+        out_inconsistent = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
+        self.assertEqual(out_inconsistent["verdict"], "inconsistent")
+
+
+class TestMainIncrementalPersistence(unittest.TestCase):
+    """main() must persist each record to disk as it's produced, not only
+    after the full sweep completes — a crash on run N of M must not lose
+    the N-1 already-paid-for measurements that preceded it."""
+
+    def test_survives_a_mid_sweep_crash(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path = os.path.join(d, "mcp.json")
+            lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+            out_dir = os.path.join(d, "out")
+            tasks_path = os.path.join(d, "tasks.json")
+            db_path = os.path.join(d, "bob.db")
+
+            with open(bob_cfg_path, "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+            with open(lp_cfg_path, "w") as fh:
+                fh.write("servers:\n  - name: codebase-memory\n    enabled: true\n")
+            with open(tasks_path, "w") as fh:
+                json.dump({"tasks": [
+                    {"id": "t1", "prompt": "one", "expect_tool": "get_architecture"},
+                    {"id": "t2", "prompt": "two", "expect_tool": "get_architecture"},
+                ]}, fh)
+
+            calls = {"n": 0}
+
+            def fake_run_task(prompt, cwd, db, timeout=900):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    # An operator Ctrl-C (or any BaseException that isn't an
+                    # Exception subclass) partway through the sweep: main()'s
+                    # per-task guard catches Exception only, so this must
+                    # propagate rather than being swallowed as task data.
+                    raise KeyboardInterrupt()
+                return f"task-{calls['n']}"
+
+            def fake_read_task_result(db, task_id, expect_tool):
+                return {"task_id": task_id, "input_tokens": 1, "output_tokens": 1,
+                        "cache_read": 0, "cache_write": 0, "cost_usd": 0.1,
+                        "context_tokens": 10, "turns": 2, "succeeded": True}
+
+            with mock.patch.object(abbench, "run_task", side_effect=fake_run_task), \
+                 mock.patch.object(abbench, "read_task_result", side_effect=fake_read_task_result), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                with self.assertRaises(KeyboardInterrupt):
+                    abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                  "--lp-config", lp_cfg_path, "--db", db_path,
+                                  "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true"])
+
+            # the first task's record must already be on disk even though
+            # the sweep never finished and no post-loop write ever ran.
+            out_files = os.listdir(out_dir)
+            self.assertEqual(len(out_files), 1)
+            with open(os.path.join(out_dir, out_files[0])) as fh:
+                persisted = json.load(fh)
+            self.assertEqual(len(persisted), 1)
+            self.assertEqual(persisted[0]["task"], "t1")
+            self.assertEqual(persisted[0]["arm"], "native")
+
+            # ConfigSwap must still have restored the original config.
+            with open(bob_cfg_path) as fh:
+                self.assertEqual(json.load(fh), {"mcpServers": {}})
+
+    def test_a_malformed_row_degrades_to_a_recorded_failure_not_a_crash(self):
+        """read_task_result is documented to raise on an unparseable or
+        unexpected tool-message row. Fail-closed means never recording a
+        WRONG measurement, not discarding measurements already correctly
+        taken elsewhere in the sweep — so this must become that one task's
+        recorded failure and the sweep must continue, not crash."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path = os.path.join(d, "mcp.json")
+            lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+            out_dir = os.path.join(d, "out")
+            tasks_path = os.path.join(d, "tasks.json")
+            db_path = os.path.join(d, "bob.db")
+
+            with open(bob_cfg_path, "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+            with open(lp_cfg_path, "w") as fh:
+                fh.write("servers:\n  - name: codebase-memory\n    enabled: true\n")
+            with open(tasks_path, "w") as fh:
+                json.dump({"tasks": [
+                    {"id": "t1", "prompt": "one", "expect_tool": "get_architecture"},
+                ]}, fh)
+
+            def fake_run_task(prompt, cwd, db, timeout=900):
+                return "task-1"
+
+            def fake_read_task_result(db, task_id, expect_tool):
+                raise ValueError("tool message missing toolUsage.signature.name: '...'")
+
+            with mock.patch.object(abbench, "run_task", side_effect=fake_run_task), \
+                 mock.patch.object(abbench, "read_task_result", side_effect=fake_read_task_result), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true"])
+
+            self.assertEqual(rc, 0)
+            # one output file for the whole sweep — the same path is
+            # re-persisted after every task across all three arms.
+            out_files = os.listdir(out_dir)
+            self.assertEqual(len(out_files), 1)
+            with open(os.path.join(out_dir, out_files[0])) as fh:
+                persisted = json.load(fh)
+            self.assertEqual(len(persisted), 3)  # one task x three arms, all "failed"
+            for rec in persisted:
+                self.assertFalse(rec["succeeded"])
+                self.assertIn("error", rec)
+
 
 if __name__ == "__main__":
     unittest.main()

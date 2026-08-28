@@ -28,9 +28,15 @@ import time
 HOME = os.path.expanduser("~")
 DEFAULT_BOB_CFG = os.path.join(HOME, ".bob", "settings", "mcp.json")
 DEFAULT_LP_CFG = os.path.join(HOME, ".config", "leanproxy_servers.yaml")
-DEFAULT_DB = os.path.join(HOME, ".bob", "db", "bob.db")  # default db_path for run_task/read_task_result; main() doesn't wire the sweep loop yet
+DEFAULT_DB = os.path.join(HOME, ".bob", "db", "bob.db")  # default db_path for run_task/read_task_result
 
 ARMS = ("native", "router", "lazy")
+
+# A single surviving pair can't disagree with itself: `signs` has at most one
+# element by construction at n=1, so an unguarded consistency check would
+# report a lone, possibly noisy, data point as a confident finding. Below
+# this many pairs, `paired_deltas` reports "insufficient_pairs" instead.
+MIN_PAIRS_FOR_CONSISTENCY = 2
 
 
 # ---------------------------------------------------------------------------
@@ -492,9 +498,18 @@ def paired_deltas(records: list, baseline: str, arm: str, field: str) -> dict:
     would crash the whole sweep's reporting instead of just excluding that
     one unpaired point.
 
-    `consistent` reports whether every paired delta shares a sign. When it is
-    False the caller should report "no detectable effect" rather than a point
-    estimate.
+    `consistent` reports whether every paired delta shares a sign AND there
+    are at least `MIN_PAIRS_FOR_CONSISTENCY` of them — a single pair cannot
+    disagree with itself, so without that floor one surviving pair (e.g.
+    four of five tasks failed to pair) would print as a confident finding
+    from what is really just noise. When `consistent` is False the caller
+    should report "no detectable effect" rather than a point estimate.
+
+    `verdict` spells out which of the three states produced `consistent`,
+    so a downstream consumer doesn't have to re-derive "not enough pairs"
+    vs. "enough pairs, but they disagree" by cross-referencing `pairs`
+    itself: one of `"no_pairs"`, `"insufficient_pairs"`, `"consistent"`,
+    `"inconsistent"`.
     """
     by_arm = {}
     for r in records:
@@ -509,16 +524,48 @@ def paired_deltas(records: list, baseline: str, arm: str, field: str) -> dict:
 
     deltas = {t: other[t][field] - base[t][field] for t in shared}
     signs = {d > 0 for d in deltas.values() if d != 0}
+    pairs = len(shared)
+    same_sign = len(signs) <= 1
+    consistent = pairs >= MIN_PAIRS_FOR_CONSISTENCY and same_sign
+
+    if pairs == 0:
+        verdict = "no_pairs"
+    elif pairs < MIN_PAIRS_FOR_CONSISTENCY:
+        verdict = "insufficient_pairs"
+    elif same_sign:
+        verdict = "consistent"
+    else:
+        verdict = "inconsistent"
 
     return {
         "baseline": baseline,
         "arm": arm,
         "field": field,
-        "pairs": len(shared),
+        "pairs": pairs,
         "deltas": deltas,
         "total_delta": sum(deltas.values()),
-        "consistent": len(signs) <= 1 and len(deltas) > 0,
+        "consistent": consistent,
+        "verdict": verdict,
     }
+
+
+def _persist_records(path: str, records: list) -> None:
+    """Write `records` to `path` as a JSON array, atomically.
+
+    Called after every task in the sweep, not just once at the end. Each
+    call fully replaces `path` with the array-so-far, so a crash on run 14
+    of 15 (a raise from `read_task_result` on a malformed row is plausible,
+    not exotic, across that many live model runs) leaves every
+    already-paid-for measurement on disk as valid, parseable JSON — the
+    same shape Task 9's `combine()` reads with a plain `json.load`, whether
+    the sweep finished or not. Writes go through a temp file and
+    `os.replace` (same pattern as `ConfigSwap`) so a crash mid-write can't
+    leave `path` holding a truncated, unparseable fragment.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(records, fh, indent=2)
+    os.replace(tmp, path)
 
 
 def main(argv=None) -> int:
@@ -554,6 +601,10 @@ def main(argv=None) -> int:
     leanproxy_bin = args.leanproxy_bin
     records = []
 
+    os.makedirs(args.out, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out_path = os.path.join(args.out, f"e2e-live-{stamp}.json")
+
     for arm in ARMS:
         cfg = arm_config(arm, leanproxy_bin, bob_cfg)
         with ConfigSwap(args.bob_config, cfg):
@@ -565,32 +616,50 @@ def main(argv=None) -> int:
                     print(f"  run failed: {exc}", file=sys.stderr)
                     records.append({"layer": "live", "origin": "measured", "arm": arm,
                                     "task": t["id"], "succeeded": False, "error": str(exc)})
+                    _persist_records(out_path, records)
                     continue
-                res = read_task_result(args.db, task_id, t["expect_tool"])
+
+                try:
+                    res = read_task_result(args.db, task_id, t["expect_tool"])
+                except Exception as exc:  # noqa: BLE001 - fail-closed means never
+                    # recording a WRONG measurement, not discarding a correct
+                    # one already paid for; a malformed row degrades to a
+                    # recorded failure for this one task, same as run_task's
+                    # own except above, rather than crashing the whole sweep.
+                    print(f"  read_task_result failed: {exc}", file=sys.stderr)
+                    records.append({"layer": "live", "origin": "measured", "arm": arm,
+                                    "task": t["id"], "task_id": task_id,
+                                    "succeeded": False, "error": str(exc)})
+                    _persist_records(out_path, records)
+                    continue
+
                 res.update({"layer": "live", "origin": "measured", "arm": arm, "task": t["id"]})
                 records.append(res)
+                _persist_records(out_path, records)
                 print(f"  cost={res['cost_usd']:.4f} turns={res['turns']} ok={res['succeeded']}")
-
-    os.makedirs(args.out, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    out_path = os.path.join(args.out, f"e2e-live-{stamp}.json")
-    with open(out_path, "w") as fh:
-        json.dump(records, fh, indent=2)
 
     print(f"\nwrote {out_path}\n")
     print("Paired per-task deltas vs native (primary statistic):")
     for arm in ("router", "lazy"):
         for field in ("cost_usd", "turns"):
             d = paired_deltas(records, "native", arm, field)
-            if d["pairs"] == 0:
+            if d["verdict"] == "no_pairs":
                 continue
-            verdict = f"{d['total_delta']:+.4f}" if d["consistent"] else "no detectable effect (signs disagree)"
+            if d["verdict"] == "insufficient_pairs":
+                verdict = f"insufficient pairs (n={d['pairs']}) — no finding"
+            elif d["verdict"] == "consistent":
+                verdict = f"{d['total_delta']:+.4f}"
+            else:
+                verdict = "no detectable effect (signs disagree)"
             print(f"  {arm:<7} {field:<9} pairs={d['pairs']} {verdict}")
 
     failures = [r for r in records if not r.get("succeeded")]
     if failures:
         print(f"\n{len(failures)} task run(s) failed — discovery failures are a real "
-              f"cost of lazy loading and are reported, not discarded:")
+              f"cost of lazy loading and are reported, not discarded. A failed run "
+              f"has no cost/turn metrics, so it is EXCLUDED from the paired-delta "
+              f"comparison above rather than silently averaged in — that exclusion "
+              f"is itself part of the finding:")
         for f in failures:
             print(f"  {f['arm']}/{f['task']}")
 
