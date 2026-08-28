@@ -1,0 +1,191 @@
+[
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 2,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 2,
+    "payload_bytes": 563,
+    "residency_tokens": 141
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 2,
+    "payload_bytes": 1377,
+    "residency_tokens": 345
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 4,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 4,
+    "payload_bytes": 1115,
+    "residency_tokens": 279
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 4,
+    "payload_bytes": 2729,
+    "residency_tokens": 683
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 8,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 8,
+    "payload_bytes": 2219,
+    "residency_tokens": 555
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 8,
+    "payload_bytes": 5433,
+    "residency_tokens": 1359
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 24,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 24,
+    "payload_bytes": 6639,
+    "residency_tokens": 1660
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 24,
+    "payload_bytes": 16253,
+    "residency_tokens": 4064
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 50,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 50,
+    "payload_bytes": 13841,
+    "residency_tokens": 3461
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 50,
+    "payload_bytes": 33855,
+    "residency_tokens": 8464
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 100,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 100,
+    "payload_bytes": 27691,
+    "residency_tokens": 6923
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 100,
+    "payload_bytes": 67705,
+    "residency_tokens": 16927
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "router",
+    "ballast_servers": 2,
+    "ballast_tools": 200,
+    "payload_bytes": 2174,
+    "residency_tokens": 544
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "lazy",
+    "ballast_servers": 2,
+    "ballast_tools": 200,
+    "payload_bytes": 55391,
+    "residency_tokens": 13848
+  },
+  {
+    "layer": "residency",
+    "origin": "measured",
+    "arm": "native",
+    "ballast_servers": 2,
+    "ballast_tools": 200,
+    "payload_bytes": 135405,
+    "residency_tokens": 33852
+  }
+]
