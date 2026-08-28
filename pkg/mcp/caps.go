@@ -141,12 +141,20 @@ func (h *Handler) extractResponseCap(serverName, toolName string, arguments json
 // the cut is appended so the model knows the output is partial and how to get
 // the rest.
 func truncateToolResult(raw json.RawMessage, maxChars int, explicitCap bool) json.RawMessage {
+	out, _ := truncateToolResultTracked(raw, maxChars, explicitCap)
+	return out
+}
+
+// truncateToolResultTracked is truncateToolResult plus a flag reporting
+// whether the result was actually cut, so callers can count truncations
+// without comparing payloads.
+func truncateToolResultTracked(raw json.RawMessage, maxChars int, explicitCap bool) (json.RawMessage, bool) {
 	// Fast path: decoded text can never exceed its JSON encoding (escapes only
 	// shrink on decode) and structuredContent is a subslice of raw, so a
 	// payload no larger than cap+slack cannot need truncation. This skips the
 	// full parse for the common under-cap result on the hot path.
 	if len(raw) <= maxChars+truncationMarkerSlack {
-		return raw
+		return raw, false
 	}
 
 	// The envelope is kept as raw fields so truncation never drops top-level
@@ -155,7 +163,7 @@ func truncateToolResult(raw json.RawMessage, maxChars int, explicitCap bool) jso
 	// with an outputSchema.
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return raw
+		return raw, false
 	}
 	contentKey := "content"
 	if _, ok := envelope[contentKey]; !ok {
@@ -171,7 +179,7 @@ func truncateToolResult(raw json.RawMessage, maxChars int, explicitCap bool) jso
 	}
 	var blocks []map[string]interface{}
 	if err := json.Unmarshal(envelope[contentKey], &blocks); err != nil || len(blocks) == 0 {
-		return raw
+		return raw, false
 	}
 
 	total := 0
@@ -189,7 +197,7 @@ func truncateToolResult(raw json.RawMessage, maxChars int, explicitCap bool) jso
 	textOver := total > maxChars+truncationMarkerSlack
 	structuredOver := structuredLen > maxChars+truncationMarkerSlack
 	if !textOver && !structuredOver {
-		return raw
+		return raw, false
 	}
 
 	kept := make([]map[string]interface{}, 0, len(blocks))
@@ -249,12 +257,12 @@ func truncateToolResult(raw json.RawMessage, maxChars int, explicitCap bool) jso
 
 	newContent, err := json.Marshal(kept)
 	if err != nil {
-		return raw
+		return raw, false
 	}
 	envelope[contentKey] = newContent
 	trimmed, err := json.Marshal(envelope)
 	if err != nil {
-		return raw
+		return raw, false
 	}
-	return trimmed
+	return trimmed, true
 }

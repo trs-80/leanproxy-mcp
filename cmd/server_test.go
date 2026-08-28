@@ -339,7 +339,7 @@ func TestUpdateStdioServerStatusOnce_NilInputs(t *testing.T) {
 func TestUpdateServerStatus_NilInputs(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
-		updateServerStatus(nil, nil, nil)
+		updateServerStatus(nil, nil, nil, nil)
 		close(done)
 	}()
 

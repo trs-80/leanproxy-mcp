@@ -469,11 +469,10 @@ func runServerRun(cmd *cobra.Command, args []string) error {
 		os.Exit(0)
 	}()
 
-	if statusStore != nil {
-		go updateServerStatus(statusStore, unifiedPool, stdioPool)
-	}
-
 	handler := mcp.NewHandlerWithToolStore(unifiedPool, slog.Default(), cache)
+	if statusStore != nil {
+		go updateServerStatus(statusStore, unifiedPool, stdioPool, handler)
+	}
 	if runFlags.maxResponseChars > 0 {
 		handler.SetDefaultMaxResponseChars(runFlags.maxResponseChars)
 	}
@@ -525,7 +524,7 @@ func updateStdioServerStatusOnce(statusStore *statusfile.FileStatusStore, stdioP
 	statusStore.UpdateServers(statuses)
 }
 
-func updateServerStatus(statusStore *statusfile.FileStatusStore, unifiedPool pool.ServerSource, stdioPool *pool.StdioPool) {
+func updateServerStatus(statusStore *statusfile.FileStatusStore, unifiedPool pool.ServerSource, stdioPool *pool.StdioPool, handler *mcp.Handler) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -568,6 +567,9 @@ func updateServerStatus(statusStore *statusfile.FileStatusStore, unifiedPool poo
 		}
 
 		statusStore.UpdateServers(statuses)
+		if handler != nil {
+			pushTruncationStatus(statusStore, handler.TruncationStats())
+		}
 	}
 }
 
