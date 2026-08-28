@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -182,9 +181,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	configPath := GlobalConfigPath
 	if configPath == "" {
-		usr, err := user.Current()
-		if err == nil {
-			configPath = filepath.Join(usr.HomeDir, ".config", "leanproxy_servers.yaml")
+		// os.UserHomeDir ($HOME), matching internal/cachefile.Dir and
+		// pkg/statusfile: a proxy started with an isolated HOME must resolve
+		// its default config inside that HOME, not from the passwd entry.
+		if home, err := os.UserHomeDir(); err == nil {
+			configPath = filepath.Join(home, ".config", "leanproxy_servers.yaml")
 		}
 	}
 

@@ -264,6 +264,46 @@ python3 scripts/abreport.py bench-results/e2e-residency-*.json \
                             bench-results/e2e-live-*.json
 ```
 
+**Layer 2 runs an unsupervised, write-capable agent in `--cwd` (default: this
+repo).** The default sweep is 3 arms × 5 tasks × 2 ballast points = 30
+autonomous sessions. The fixture prompts are read-only questions, but nothing
+constrains the agent to them, so `abbench.py` refuses to start on a dirty
+working tree (`--allow-dirty-repo` overrides) and reports anything that changed
+once the sweep finishes.
+
+**Layer 2 refuses before it spends anything.** Ahead of the first `bob run` it
+checks that no server is loaded both directly and through the proxy (by name
+*and* by resolved command path or URL, so the same upstream under two different
+names is still caught), that every proxied server can be attached directly for
+the native arm, and — by starting each arm's servers and asking them for their
+tools — that all three arms can actually reach every tool
+`tests/bench/e2e/fixtures/tasks.json` expects. A configuration that would
+produce no verdict is a refusal with an empty bill, not a discovery made after
+the budget is gone. `--skip-preflight` bypasses this and is documented as
+spending real money on an unverified configuration.
+
+**The arms mirror Layer 1's topology exactly**, because Layer 3 joins the two
+layers on `ballast_tools` alone and multiplies one layer's turn count by the
+other's residency figure:
+
+| Arm | Proxied servers | Ballast |
+|---|---|---|
+| `native` | attached directly to the agent | attached directly to the agent |
+| `router` | behind the proxy | behind the proxy |
+| `lazy` | behind the proxy | behind the proxy |
+
+Both layers take the ballast tool description from the single fixture
+`tests/bench/e2e/fixtures/ballast.json` (Layer 1 embeds it with `//go:embed`;
+Layer 2 reads it), and `TestBallastWeightIsIdenticalAcrossLayers` fails on a
+one-byte difference between the two layers' real `tools/list` payloads.
+
+The proxy arms run against a generated copy of the operator's
+`leanproxy_servers.yaml` with the ballast spliced in and `adaptive_stub_after`
+stripped — under adaptive stubs the proxy's `tools/list` depends on usage
+recorded in `~/.config/leanproxy/toolusage.json`, which every live run mutates,
+so the lazy arm's residency would drift mid-sweep and stop describing the fixed
+figure Layer 1 measured.
+
 `make bench-e2e` sweeps ballast tool counts `{2, 4, 8, 25, 50, 100, 200}`
 (`ballastPoints` in `tests/bench/e2e/residency_test.go`), split across 2
 synthetic servers. Integer division across those servers means the count
@@ -324,6 +364,15 @@ smoothing over gaps in the data:
   a single pair cannot disagree with itself.
 - An arm with no usable live data anywhere is omitted from the table, and the
   omission is named and explained rather than left for the reader to notice.
+- The report checks itself against reality before quoting a number. Each row
+  carries `input_tokens observed` — real token accounting from the live run,
+  cached tokens included — next to `residency × turns`. `net_tokens` is a
+  structural FLOOR, so observed input tokens *below* the modelled cost mean the
+  residency figure does not describe that run at all; below
+  `MIN_OBSERVED_MODEL_RATIO` (0.5) no verdict is printed for that row. In the
+  other direction, above `MAX_OBSERVED_MODEL_RATIO` (5.0) the verdict is still
+  printed but tagged, so a reader can see that the quoted number is a fraction
+  of the real bill.
 
 As of this writing **no live run has been performed**: `bench-results/`
 contains only `e2e-residency-*.json` files. Layer 2 and Layer 3 are built and
@@ -341,8 +390,9 @@ in tokenizer's clothing.
 
 **The synthetic ballast tools bias the measurement toward lazy mode's
 weaker half.** Each ballast tool carries a realistic ~568-character
-description (`BallastToolDescription` in `tests/bench/e2e/ballast.go`,
-sized against real tool caches — see below) but a deliberately trivial
+description (`tests/bench/e2e/fixtures/ballast.json`, embedded into Layer 1
+as `BallastToolDescription` and read by Layer 2 from the same file; sized
+against real tool caches — see below) but a deliberately trivial
 one-property `inputSchema`, so `compactSchema` (LeanProxy's structural
 schema compaction) never has anything to compact. Concretely: for one
 ballast tool, the JSON-encoded description is 570 of the tool object's 675

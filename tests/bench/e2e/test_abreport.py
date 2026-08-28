@@ -728,6 +728,102 @@ class TestMain(unittest.TestCase):
             self.assertIn("(lazy — the compact stub is replaced by the real one)", out)
             self.assertNotIn("full schema (native)", out)
 
+    # -- I-1: the report's own reality check now gates the verdict ----------
+
+    def _live_with_observed(self, router_input, native_input=800, lazy_input=500):
+        live = [dict(r) for r in self.LIVE]
+        for r in live:
+            if r["arm"] == "router":
+                r["input_tokens"] = router_input
+            elif r["arm"] == "native":
+                r["input_tokens"] = native_input
+            else:
+                r["input_tokens"] = lazy_input
+        return live
+
+    def test_verdict_is_suppressed_when_observed_falls_far_below_the_model(self):
+        """I-1. net_tokens is a FLOOR, so observed input tokens below the
+        residency-modelled cost mean the residency figure does not describe
+        this run at all — the signature of two layers measuring different
+        experiments. In the review's own end-to-end run the ratio spanned
+        0.14x to 6.12x and the headline still printed a confident number."""
+        with tempfile.TemporaryDirectory() as d:
+            res = self._write(d, "e2e-residency-x.json", self.RESIDENCY)
+            # router modelled = 544 x 2 = 1088; observed 100 => 0.09x
+            live = self._write(d, "e2e-live-x.json", self._live_with_observed(100))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                abreport.main([res, live])
+            out = buf.getvalue()
+            router_lines = [ln for ln in out.splitlines() if " router " in ln and "ballast=" in ln]
+            self.assertTrue(router_lines)
+            self.assertTrue(all("UNRELIABLE" in ln for ln in router_lines), router_lines)
+            self.assertIn("residency-modelled cost", out)
+
+    def test_verdict_survives_when_observed_matches_the_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = self._write(d, "e2e-residency-x.json", self.RESIDENCY)
+            live = self._write(d, "e2e-live-x.json", self._live_with_observed(1100))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                abreport.main([res, live])
+            out = buf.getvalue()
+            router_lines = [ln for ln in out.splitlines() if " router " in ln and "ballast=" in ln]
+            self.assertTrue(router_lines)
+            self.assertFalse(any("UNRELIABLE" in ln for ln in router_lines), router_lines)
+
+    def test_a_verdict_dwarfed_by_real_conversation_cost_is_tagged_not_hidden(self):
+        """The other direction: the schema delta can still be real when the
+        conversation cost far exceeds it, so this tags rather than
+        suppresses — but the reader must see that the quoted saving is a
+        fraction of the actual bill."""
+        with tempfile.TemporaryDirectory() as d:
+            res = self._write(d, "e2e-residency-x.json", self.RESIDENCY)
+            live = self._write(d, "e2e-live-x.json",
+                               self._live_with_observed(50000, native_input=50000,
+                                                        lazy_input=50000))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                abreport.main([res, live])
+            out = buf.getvalue()
+            self.assertIn("fraction of the real bill", out)
+            self.assertIn("COSTS MORE", out)  # still printed, just tagged
+
+    # -- M-3: never point at an omission note that was not printed ----------
+
+    def test_arm_missing_from_both_layers_is_explained_in_place(self):
+        """M-3, reproduced: with `router` absent from the residency file
+        entirely, `_print_omitted_arms` (which enumerates residency arms) says
+        nothing and `_print_unswept_live_arms` (which covers the mirror case)
+        says nothing either — but the breakeven section still printed
+        '(router: not measured at all — see the omission note above)'."""
+        residency = [r for r in self.RESIDENCY if r["arm"] != "router"]
+        live = [r for r in self.LIVE if r["arm"] != "router"]
+        with tempfile.TemporaryDirectory() as d:
+            res = self._write(d, "e2e-residency-x.json", residency)
+            live_path = self._write(d, "e2e-live-x.json", live)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                abreport.main([res, live_path])
+            out = buf.getvalue()
+            self.assertIn("router", out)
+            self.assertIn("no omission note above", out)
+            self.assertNotIn("see the omission note above, not repeated here", out)
+
+    def test_arm_with_residency_but_no_live_data_still_points_at_its_note(self):
+        """The complement: when a note WAS printed, keep pointing at it
+        rather than duplicating the explanation."""
+        live = [r for r in self.LIVE if r["arm"] != "router"]
+        with tempfile.TemporaryDirectory() as d:
+            res = self._write(d, "e2e-residency-x.json", self.RESIDENCY)
+            live_path = self._write(d, "e2e-live-x.json", live)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                abreport.main([res, live_path])
+            out = buf.getvalue()
+            self.assertIn("no live data was collected for this arm", out)
+            self.assertIn("see the omission note above, not repeated here", out)
+
 
 class TestAgainstRealResidencyFixture(unittest.TestCase):
     """Sanity checks against a committed copy of a real

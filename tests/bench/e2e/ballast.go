@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,7 +18,53 @@ type Spec struct {
 	Args    []string
 }
 
-// BallastToolDescription is the description given to every ballast tool.
+// ballastFixtureJSON is the shared ballast definition both layers of the A/B
+// harness read. It lives in a data file rather than in this source file so
+// that Layer 2 (scripts/abbench.py) consumes the SAME bytes rather than a
+// hand-copied duplicate. The final review's C-1 is exactly what happens when
+// they drift: Layer 2 omitted --description entirely and its ballast tools
+// weighed 156 B each against Layer 1's 677 B, while abreport.py joined the two
+// layers on ballast_tools alone — mislabelling the breakeven curve's x-axis by
+// 4.3x with nothing downstream able to notice.
+//
+//go:embed fixtures/ballast.json
+var ballastFixtureJSON []byte
+
+// BallastFixture is the parsed fixtures/ballast.json. Only the fields both
+// layers actually consume or assert on are modelled; the rest of the file is
+// provenance prose for humans.
+type BallastFixture struct {
+	Description      string `json:"description"`
+	DescriptionChars int    `json:"description_chars"`
+	Measured         struct {
+		LazyNativeFlipChars   int `json:"lazy_native_flip_chars"`
+		TruncationStartsChars int `json:"truncation_starts_chars"`
+	} `json:"measured"`
+}
+
+// Ballast is the fixture as loaded at package init. A fixture whose own
+// recorded description_chars disagrees with the description it ships is a
+// false measurement claim of exactly the kind this harness exists to avoid,
+// so it panics rather than being quietly believed.
+var Ballast = mustLoadBallastFixture()
+
+func mustLoadBallastFixture() BallastFixture {
+	var f BallastFixture
+	if err := json.Unmarshal(ballastFixtureJSON, &f); err != nil {
+		panic(fmt.Sprintf("tests/bench/e2e/fixtures/ballast.json is not valid JSON: %v", err))
+	}
+	if got := len(f.Description); got != f.DescriptionChars {
+		panic(fmt.Sprintf(
+			"fixtures/ballast.json: description is %d characters but description_chars says %d "+
+				"— fix one of them; a recorded measurement that disagrees with the thing it "+
+				"measures is the exact defect this fixture exists to prevent", got, f.DescriptionChars))
+	}
+	return f
+}
+
+// BallastToolDescription is the description given to every ballast tool, in
+// BOTH layers — Layer 1 through this variable, Layer 2 through
+// scripts/abbench.py's load_ballast_fixture(), reading the same file.
 //
 // live-snapshot.json is NOT a measurement — its own "source" field says
 // "seeded-from-docs-index-md", docs/benchmark-results.md calls its numbers a
@@ -29,26 +77,39 @@ type Spec struct {
 // directly from those files: codebase-memory averages 1449 bytes/tool with a
 // median description of 610 characters; context7 averages 2240 bytes/tool
 // with a median description of 1218 characters. codebase-memory is the more
-// conservative of the two, so its description length is the target here:
-// 610 characters of real prose (not padding).
+// conservative of the two, so its 610-character median was the TARGET. The
+// prose actually written to hit it measures 568 characters — that is the
+// shipped, measured length, and it is what both layers carry. (An earlier
+// version of this comment claimed the literal was 610 characters. It never
+// was; see review M-1.)
 //
-// This description is well past stubDescChars (160, pkg/mcp/discovery.go),
-// so --lazy-tools truncation has real prose to cut. The flip point was
-// measured directly (not just computed from stubDescChars+ellipsis+prefix):
-// at <=160 description characters, truncateDescription is a no-op and lazy
-// mode is strictly larger than native at every ballast size (the "servername_"
-// prefix is pure overhead with nothing to offset it — this is the bug the
-// previous version of this constant had). Between 160 and 165 characters the
-// ordering flips; at 165+ characters lazy is smaller than native and stays
-// smaller as descriptions grow further, since native's cost grows linearly
-// with description length while lazy's stays capped at stubDescChars.
+// 568 characters is well past stubDescChars (160, pkg/mcp/discovery.go), so
+// --lazy-tools truncation has real prose to cut. The flip point was measured
+// directly (not computed from stubDescChars+ellipsis+prefix) by sweeping
+// description length and capturing real tools/list payload bytes at two
+// shapes, 1 server x 25 tools and 2 servers x 50 tools, which agree exactly:
 //
-// Even at 610 characters this constant cannot reach 1449 bytes/tool, because
-// mockmcp's inputSchema stays a single string-typed property
+//   - at <= 160 characters truncateDescription is a no-op and lazy is
+//     strictly larger than native at every ballast size (the "servername_"
+//     prefix is pure overhead with nothing to offset it — the bug the first
+//     version of this constant had);
+//   - truncation first shortens the payload at 161 characters
+//     (word-boundary snapping, pkg/mcp/format.go);
+//   - lazy is still larger than native from 161 through 167, and first
+//     becomes strictly smaller at 168 characters. (An earlier version of
+//     this comment said "between 160 and 165"; the final review said 167.
+//     Both are wrong: 167 is the last NON-flipped length. See review M-2.)
+//
+// Past 168 lazy stays smaller as descriptions grow, since native's cost grows
+// linearly with description length while lazy's stays capped at
+// stubDescChars.
+//
+// Even at 568 characters this cannot reach 1449 bytes/tool, because mockmcp's
+// inputSchema stays a single string-typed property
 // (tests/bench/mockmcp/server.go), deliberately left trivial so compactSchema
 // has nothing to compact — see the task-3 report for the resulting bias and
 // its measured net direction.
-const BallastToolDescription = "Searches the configured backend for items matching the given query and returns matching records with their metadata, pagination cursor, and total count. Use this when you need to look up items by keyword, tag, or free-text search rather than fetching a known ID directly. Supports filtering by status, date range, owner, and category; results are sorted by relevance unless a sort field is specified explicitly in the request parameters. Pass a smaller page_size for interactive use and a larger one for bulk export; the default page_size is 50 and the maximum is 500."
+var BallastToolDescription = Ballast.Description
 
 // BallastSpecs returns `servers` synthetic MCP servers, each advertising
 // `toolsPerServer` tools. Ballast exists to move total schema weight past the

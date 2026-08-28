@@ -93,6 +93,33 @@ TURN_SENSITIVITY = 1
 # fixture from 14/14 verdicts to 3/14, with no loss on the genuine ones).
 MIN_PLAUSIBLE_TURNS = 1
 
+# The report's own reality check, promoted from an advisory footnote to a
+# verdict gate (review I-1).
+#
+# `net_tokens = residency_tokens x turns + output_tokens` is a MODEL of the
+# live run. Each row also carries what the run really cost
+# (`input_tokens_observed`: uncached input + cache_read + cache_write). The
+# ratio between them says whether the model describes that run at all, and in
+# the review's own end-to-end reproduction it spanned 0.14x to 6.12x while the
+# headline still printed "router saves 145,467 tok/task" with no tag.
+#
+# The two directions mean different things, so they are handled differently:
+#
+# - Below MIN_OBSERVED_MODEL_RATIO the model claims MORE schema weight than the
+#   run was billed for in total. net_tokens is supposed to be a FLOOR, so this
+#   is not imprecision, it is the join being wrong — the exact signature of two
+#   layers measuring different experiments (reviews C-1, C-2). No verdict is
+#   printed for such a row.
+# - Above MAX_OBSERVED_MODEL_RATIO the schema is a small fraction of what the
+#   conversation really cost. The schema DELTA between arms can still be real,
+#   so this tags the verdict rather than suppressing it — but a reader must see
+#   that "saves N tok/task" is N out of a much larger bill.
+#
+# Neither bound is a law of nature; both are stated, and both are printed with
+# the offending ratio so a reader can judge the row directly.
+MIN_OBSERVED_MODEL_RATIO = 0.5
+MAX_OBSERVED_MODEL_RATIO = 5.0
+
 # Fewer samples than this backing a comparison — paired tasks if the
 # comparison paired at all, otherwise the smaller of the two arms' own
 # sample counts — and no verdict is confident enough to print as a number.
@@ -498,6 +525,21 @@ UNDERSTATEMENT_FOOTNOTE = (
 )
 
 
+def _model_ratio(row: dict):
+    """observed input tokens / residency-modelled input tokens, or None.
+
+    None when the row has no observed-cost data (nothing to check against) or
+    a zero modelled cost (nothing to divide by).
+    """
+    observed = row.get("input_tokens_observed")
+    if observed is None:
+        return None
+    modelled = row["residency_tokens"] * row["turns"]
+    if not modelled:
+        return None
+    return observed / modelled
+
+
 def _source_note(row: dict) -> str:
     """" (from ballast=N)" when a row's n/succ%/attempted/turns are another
     level's samples, not this row's own — printed wherever those numbers
@@ -548,19 +590,22 @@ def _print_incomplete(live: list, visible_arms: set) -> None:
         print(f"  {r.get('arm', '?')}/{r.get('task', '?')}: {r.get('error', 'no error recorded')}")
 
 
-def _print_omitted_arms(residency: list, live: list, rows: list) -> None:
+def _print_omitted_arms(residency: list, live: list, rows: list) -> set:
     """State by name every arm that had residency data but produced no row.
 
     Required by the brief ("omit rather than guess"), but omission with no
     explanation is indistinguishable from a bug to a reader who did not run
     the tool (review I3) — this says which of "never run live", "every run
     crashed", or "every run completed but never found the tool" happened.
+
+    Returns the set of arms it actually explained, so `_print_breakeven` can
+    only point at a note that was really printed (review M-3).
     """
     all_arms = sorted({r["arm"] for r in residency if "arm" in r})
     present = {r["arm"] for r in rows}
     missing = [a for a in all_arms if a not in present]
     if not missing:
-        return
+        return set()
 
     print("\nArms with residency data but no live-backed row (omitted, not guessed at):")
     for arm in missing:
@@ -579,9 +624,10 @@ def _print_omitted_arms(residency: list, live: list, rows: list) -> None:
                   f"tool (0% success), plus {crashed} that crashed — no usable turn count")
         else:
             print(f"  {arm}: all {crashed} live run(s) crashed before scoring — no usable data")
+    return set(missing)
 
 
-def _print_unswept_live_arms(residency: list, live: list) -> None:
+def _print_unswept_live_arms(residency: list, live: list) -> set:
     """The mirror of _print_omitted_arms: an arm with live data but no
     residency measurement at all. Layer 1 sweeps every arm, so this should
     not happen in practice, but combine() silently drops such an arm's live
@@ -592,15 +638,16 @@ def _print_unswept_live_arms(residency: list, live: list) -> None:
     live_arms = {r["arm"] for r in live if "arm" in r}
     extra = sorted(live_arms - residency_arms)
     if not extra:
-        return
+        return set()
     print("\nArms with live data but no residency measurement (also omitted):")
     for arm in extra:
         n = sum(1 for r in live if r.get("arm") == arm)
         print(f"  {arm}: {n} live run(s) exist but Layer 1 never swept this arm — "
               f"nothing to join them to")
+    return set(extra)
 
 
-def _print_breakeven(rows: list) -> None:
+def _print_breakeven(rows: list, explained: set = None) -> None:
     """The line this harness exists to produce: does each proxy arm save net
     tokens per task versus native, at which ballast level, stated plainly
     enough — including where the claim is fragile — for a reader who never
@@ -614,10 +661,31 @@ def _print_breakeven(rows: list) -> None:
     fell through to "never saves", stating a confident negative finding
     about an arm the omission notice, ten lines above, said was never run).
     """
+    explained = explained or set()
     by_level = {}
     for r in rows:
         by_level.setdefault(r["ballast_tools"], {})[r["arm"]] = r
     arms_with_rows = {r["arm"] for r in rows}
+
+    def _not_measured_note(arms):
+        """Never point at an omission note that was not printed (review M-3).
+
+        `_print_omitted_arms` only enumerates arms present in the residency
+        file and `_print_unswept_live_arms` only covers the mirror case, so an
+        arm missing from BOTH layers used to be described as "see the omission
+        note above" when no such note existed anywhere in the output.
+        """
+        pointed = [a for a in arms if a in explained]
+        orphan = [a for a in arms if a not in explained]
+        bits = []
+        if pointed:
+            bits.append(f"{', '.join(pointed)}: not measured at all — see the "
+                        f"omission note above, not repeated here")
+        if orphan:
+            bits.append(f"{', '.join(orphan)}: not measured at all — this arm has "
+                        f"neither residency nor live records in the given files, so "
+                        f"there is no omission note above to explain it")
+        return "  (" + "; ".join(bits) + ")"
 
     print("\nBreakeven (net tokens per task, proxy arm vs native; paired by task id where possible):")
     printed_any_line = False
@@ -652,6 +720,22 @@ def _print_breakeven(rows: list) -> None:
                 kind = "paired sample" if pairs else "sample"
                 reasons.append(f"only {effective_n} {kind}(s) backing it (need >= {MIN_PAIRED_SAMPLES_FOR_VERDICT})")
 
+            # The report's own reality check, as a gate rather than a footnote
+            # (review I-1): a row whose observed input tokens are far below
+            # what its residency model claims is a row whose net_tokens has no
+            # business being quoted.
+            understated = []
+            for label, row in ((arm, got), (BASELINE_ARM, native)):
+                ratio = _model_ratio(row)
+                if ratio is not None and ratio < MIN_OBSERVED_MODEL_RATIO:
+                    understated.append(
+                        f"{label}'s observed input tokens are only {ratio:.2f}x its "
+                        f"residency-modelled cost (need >= {MIN_OBSERVED_MODEL_RATIO}); "
+                        f"net_tokens is meant to be a FLOOR, so the residency figure "
+                        f"does not describe this run"
+                    )
+            reasons.extend(understated)
+
             if reasons:
                 suppressed_count[arm] += 1
                 print(f"  ballast={level:<4} {arm:<7} UNRELIABLE — {'; '.join(reasons)} "
@@ -678,6 +762,12 @@ def _print_breakeven(rows: list) -> None:
                 tags.append("FLIPS under +-1 turn error" if flip else "stable under +-1 turn error")
             if arm == "router" and origin == "derived":
                 tags.append("router residency is flat: this verdict IS the borrowed turn count")
+            for label, row in ((arm, got), (BASELINE_ARM, native)):
+                ratio = _model_ratio(row)
+                if ratio is not None and ratio > MAX_OBSERVED_MODEL_RATIO:
+                    tags.append(
+                        f"{label} really cost {ratio:.1f}x what this schema model "
+                        f"counts: the number above is a fraction of the real bill")
 
             print(f"  ballast={level:<4} {arm:<7} {verdict} {abs(delta):>9.0f} "
                   f"tok/task vs native  [{', '.join(tags)}]")
@@ -696,8 +786,7 @@ def _print_breakeven(rows: list) -> None:
         print("  (no ballast level has both a native and a proxy-arm data point)")
         if not_measured:
             print("\nFirst breakeven per arm:")
-            print(f"  ({', '.join(not_measured)}: not measured at all — see the "
-                  f"omission note above, not repeated here)")
+            print(_not_measured_note(not_measured))
         return
 
     print("\nFirst breakeven per arm:")
@@ -726,8 +815,7 @@ def _print_breakeven(rows: list) -> None:
                   f"is genuinely unknown, not zero")
 
     if not_measured:
-        print(f"  ({', '.join(not_measured)}: not measured at all — see the omission "
-              f"note above, not repeated here)")
+        print(_not_measured_note(not_measured))
 
 
 def main(argv=None) -> int:
@@ -758,9 +846,9 @@ def main(argv=None) -> int:
     visible_arms = {r["arm"] for r in rows}
     _print_table(rows)
     _print_incomplete(live, visible_arms)
-    _print_omitted_arms(residency, live, rows)
-    _print_unswept_live_arms(residency, live)
-    _print_breakeven(rows)
+    explained = _print_omitted_arms(residency, live, rows)
+    explained |= _print_unswept_live_arms(residency, live)
+    _print_breakeven(rows, explained)
     return 0
 
 

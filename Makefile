@@ -132,11 +132,15 @@ bench-e2e: ## Run the free residency sweep (no LLM, no coins, CI-safe)
 	$(GO) test ./tests/bench/e2e/ -run 'TestResidency' -v -timeout 10m
 
 .PHONY: bench-e2e-live
-bench-e2e-live: ## Run the live A/B sweep (SPENDS COINS; requires LEANPROXY_AB_LIVE=1 set by the caller)
+bench-e2e-live: ## Run the live A/B sweep (SPENDS COINS and runs an unsupervised write-capable agent in this repo; requires LEANPROXY_AB_LIVE=1 set by the caller)
 ifndef LEANPROXY_AB_LIVE
 	$(error LEANPROXY_AB_LIVE=1 is required — this target spends coins. Run: LEANPROXY_AB_LIVE=1 make bench-e2e-live)
 endif
 	@echo "Running live A/B sweep — this spends coins."
+	@echo "It also runs 30 unsupervised agent sessions with write-capable tools in"
+	@echo "$(CURDIR). abbench refuses to start on a dirty working tree; commit or"
+	@echo "stash first. It swaps ~/.bob/settings/mcp.json per arm and restores it on"
+	@echo "every exit path, including SIGINT/SIGTERM/SIGHUP."
 	python3 scripts/abbench.py --out bench-results
 
 .PHONY: test-all

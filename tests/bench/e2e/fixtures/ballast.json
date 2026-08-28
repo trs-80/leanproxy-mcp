@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "note": "SINGLE SOURCE OF TRUTH for ballast tool weight, consumed by BOTH layers of the A/B harness: Layer 1 (tests/bench/e2e/ballast.go, via //go:embed) and Layer 2 (scripts/abbench.py, via load_ballast_fixture). Editing this file changes both at once, which is the point: abreport.py joins the two layers on ballast_tools alone, so if one layer's ballast tool is heavier than the other's, the breakeven curve's x-axis is mislabelled by exactly that ratio and nothing downstream can detect it. TestBallastWeightIsIdenticalAcrossLayers (tests/bench/e2e/ballast_test.go) measures both layers' real tools/list payloads and fails if they differ by a single byte.",
+  "description": "Searches the configured backend for items matching the given query and returns matching records with their metadata, pagination cursor, and total count. Use this when you need to look up items by keyword, tag, or free-text search rather than fetching a known ID directly. Supports filtering by status, date range, owner, and category; results are sorted by relevance unless a sort field is specified explicitly in the request parameters. Pass a smaller page_size for interactive use and a larger one for bulk export; the default page_size is 50 and the maximum is 500.",
+  "description_chars": 568,
+  "measured": {
+    "source": "leanproxy's own persisted tool cache ~/.config/leanproxy/toolcache/codebase-memory.json (15 tools): 1449 bytes/tool average, 610-character median description. That 610 was the TARGET; the prose actually written here measures 568 characters, which is what both layers carry.",
+    "lazy_native_flip_chars": 168,
+    "truncation_starts_chars": 161,
+    "flip_note": "Measured directly by sweeping description length and capturing real tools/list payload bytes at two shapes (1 server x 25 tools and 2 servers x 50 tools); both agree exactly. truncateDescription (pkg/mcp/format.go) is a no-op at <= 160 characters and first shortens the payload at 161 (word-boundary snapping). Lazy stays LARGER than native from 161 to 167 -- the 'servername_' prefix is pure overhead with too little prose cut to offset it -- is exactly equal at 168 in the earlier token estimate, and is first strictly SMALLER in bytes at 168. Earlier comments in ballast.go claimed '160-165'; that was wrong, and so is the '167' in the final review (167 is the last NON-flipped length, not the flip)."
+  }
+}
