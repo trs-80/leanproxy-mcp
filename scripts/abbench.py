@@ -20,12 +20,15 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
+import subprocess
 import sys
+import time
 
 HOME = os.path.expanduser("~")
 DEFAULT_BOB_CFG = os.path.join(HOME, ".bob", "settings", "mcp.json")
 DEFAULT_LP_CFG = os.path.join(HOME, ".config", "leanproxy_servers.yaml")
-DEFAULT_DB = os.path.join(HOME, ".bob", "db", "bob.db")  # unused until Task 6's runner reads turn logs
+DEFAULT_DB = os.path.join(HOME, ".bob", "db", "bob.db")  # default db_path for run_task/read_task_result; main() doesn't wire the sweep loop yet
 
 ARMS = ("native", "router", "lazy")
 
@@ -308,6 +311,110 @@ class ConfigSwap:
     def __exit__(self, exc_type, exc, tb):
         self._restore()
         return False
+
+
+# ---------------------------------------------------------------------------
+# task fixture and Bob driver
+# ---------------------------------------------------------------------------
+
+
+def load_tasks(path: str) -> list:
+    """Load and validate the frozen task fixture."""
+    with open(path) as fh:
+        doc = json.load(fh)
+    tasks = doc.get("tasks") or []
+    seen = set()
+    for t in tasks:
+        for key in ("id", "prompt", "expect_tool"):
+            if key not in t:
+                raise ValueError(f"task missing {key!r}: {t}")
+        if t["id"] in seen:
+            raise ValueError(f"duplicate task id: {t['id']}")
+        seen.add(t["id"])
+    return tasks
+
+
+def _latest_task_id(db_path: str) -> str:
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = conn.execute("select id from tasks order by created_at desc limit 1").fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def run_task(prompt: str, cwd: str, db_path: str, timeout: int = 900) -> str:
+    """Run one prompt through Bob headlessly and return the new task id.
+
+    The id is recovered by diffing the newest task row before and after, since
+    `bob run` does not print it in a machine-readable form.
+    """
+    before = _latest_task_id(db_path)
+
+    proc = subprocess.run(
+        ["bob", "run", prompt],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+    # Poll briefly: Bob writes the task row asynchronously on completion.
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        after = _latest_task_id(db_path)
+        if after and after != before:
+            return after
+        time.sleep(1)
+
+    raise RuntimeError(
+        f"no new task row appeared after `bob run` (exit {proc.returncode})\n"
+        f"stdout: {proc.stdout[-500:]}\nstderr: {proc.stderr[-500:]}"
+    )
+
+
+def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
+    """Read ground-truth token counts, turn count, and success for one task.
+
+    Turn count is the number of assistant messages: each one is a model call
+    that re-sends the whole conversation, which is exactly the cost lazy
+    loading trades residency for.
+
+    Success matches `expect_tool` as a substring of the recorded tool message,
+    because the same tool is named `codebase-memory_get_architecture` behind the
+    proxy and `get_architecture` natively. Substring rather than equality keeps
+    the arms comparable; fixtures should therefore name the unprefixed tool.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = conn.execute("select costs from tasks where id = ?", (task_id,)).fetchone()
+        costs = json.loads(row[0]) if row and row[0] else {}
+
+        turns = conn.execute(
+            "select count(*) from messages where task_id = ? and role = 'assistant'",
+            (task_id,),
+        ).fetchone()[0]
+
+        tool_rows = conn.execute(
+            "select data from messages where task_id = ? and role = 'tool'",
+            (task_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    succeeded = any(expect_tool in (r[0] or "") for r in tool_rows)
+
+    return {
+        "task_id": task_id,
+        "input_tokens": costs.get("input", 0),
+        "output_tokens": costs.get("output", 0),
+        "cache_read": costs.get("cacheRead", 0),
+        "cache_write": costs.get("cacheWrite", 0),
+        "cost_usd": costs.get("cost", 0.0),
+        "context_tokens": costs.get("contextTokens", 0),
+        "turns": turns,
+        "succeeded": succeeded,
+    }
 
 
 def main(argv=None) -> int:

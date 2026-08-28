@@ -284,5 +284,67 @@ class TestConfigSwap(unittest.TestCase):
                 self.assertEqual(handler, abbench.signal.SIG_DFL)
 
 
+class TestLoadTasks(unittest.TestCase):
+    def test_loads_frozen_fixture(self):
+        path = pathlib.Path(__file__).resolve().parent / "fixtures" / "tasks.json"
+        tasks = abbench.load_tasks(str(path))
+        self.assertEqual(len(tasks), 5)
+        for t in tasks:
+            self.assertIn("id", t)
+            self.assertIn("prompt", t)
+            self.assertIn("expect_tool", t)
+
+    def test_rejects_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "tasks.json")
+            with open(p, "w") as fh:
+                json.dump({"tasks": [
+                    {"id": "a", "prompt": "x", "expect_tool": "t"},
+                    {"id": "a", "prompt": "y", "expect_tool": "t"},
+                ]}, fh)
+            with self.assertRaises(ValueError):
+                abbench.load_tasks(p)
+
+
+class TestReadTaskResult(unittest.TestCase):
+    def _db(self, d):
+        import sqlite3
+        p = os.path.join(d, "bob.db")
+        conn = sqlite3.connect(p)
+        conn.execute("create table tasks (id text, costs text)")
+        conn.execute("create table messages (task_id text, role text, data text, created_at int)")
+        conn.execute(
+            "insert into tasks values (?,?)",
+            ("t1", json.dumps({"input": 1000, "output": 50, "cacheRead": 800,
+                               "cacheWrite": 200, "cost": 0.21, "contextTokens": 900})),
+        )
+        for i, role in enumerate(["user", "assistant", "tool", "assistant"]):
+            data = json.dumps({"role": role, "name": "codebase-memory_get_architecture"}) \
+                if role == "tool" else json.dumps({"role": role})
+            conn.execute("insert into messages values (?,?,?,?)", ("t1", role, data, i))
+        conn.commit()
+        conn.close()
+        return p
+
+    def test_extracts_tokens_and_turns(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = abbench.read_task_result(self._db(d), "t1", "codebase-memory_get_architecture")
+            self.assertEqual(res["input_tokens"], 1000)
+            self.assertEqual(res["output_tokens"], 50)
+            self.assertEqual(res["cost_usd"], 0.21)
+            self.assertEqual(res["turns"], 2)
+            self.assertTrue(res["succeeded"])
+
+    def test_marks_failure_when_expected_tool_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = abbench.read_task_result(self._db(d), "t1", "codebase-memory_trace_path")
+            self.assertFalse(res["succeeded"])
+
+    def test_matches_on_suffix_so_arms_with_different_prefixes_compare(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = abbench.read_task_result(self._db(d), "t1", "get_architecture")
+            self.assertTrue(res["succeeded"])
+
+
 if __name__ == "__main__":
     unittest.main()
