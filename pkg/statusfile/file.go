@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sync"
 	"time"
@@ -59,12 +58,12 @@ func NewFileStatusStore(listenAddr string, logger *slog.Logger) (*FileStatusStor
 		logger = slog.Default()
 	}
 
-	usr, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("statusfile: get user home dir: %w", err)
 	}
 
-	statusDir := filepath.Join(usr.HomeDir, ".config", "leanproxy", "status")
+	statusDir := filepath.Join(home, ".config", "leanproxy", "status")
 	if err := os.MkdirAll(statusDir, 0700); err != nil {
 		return nil, fmt.Errorf("statusfile: create status dir: %w", err)
 	}
@@ -161,12 +160,12 @@ func (s *FileStatusStore) writeLocked() {
 }
 
 func ReadCurrentStatus() (*StatusInfo, error) {
-	usr, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("statusfile: get user home dir: %w", err)
 	}
 
-	statusFile := filepath.Join(usr.HomeDir, ".config", "leanproxy", "status", "current.json")
+	statusFile := filepath.Join(home, ".config", "leanproxy", "status", "current.json")
 	data, err := os.ReadFile(statusFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -202,12 +201,12 @@ func ReadCurrentStatusFromConfigDir(configDir string) (*StatusInfo, error) {
 }
 
 func ListStatusFiles() ([]string, error) {
-	usr, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("statusfile: get user home dir: %w", err)
 	}
 
-	statusDir := filepath.Join(usr.HomeDir, ".config", "leanproxy", "status")
+	statusDir := filepath.Join(home, ".config", "leanproxy", "status")
 	entries, err := os.ReadDir(statusDir)
 	if err != nil {
 		if os.IsNotExist(err) {

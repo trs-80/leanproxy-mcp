@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -78,5 +79,88 @@ func TestDialIsolatesHomeDirectory(t *testing.T) {
 		if !beforeNames[e.Name()] {
 			t.Fatalf("Capture wrote %s into the real cache dir %s; Dial must isolate the subprocess's HOME", e.Name(), cacheDir)
 		}
+	}
+}
+
+// statSnapshot is a lightweight fingerprint of a status file: whether it
+// exists, and (on Unix) its inode. Inode, not mtime, is what actually detects
+// a delete-and-recreate: a live leanproxy daemon on the developer's machine
+// rewrites its status file in place every few seconds (cmd/server.go's 5s
+// status ticker), which changes mtime but keeps the same inode. Only a
+// delete+recreate — the exact shape of the CRITICAL-1 bug below — changes it.
+type statSnapshot struct {
+	exists bool
+	ino    uint64
+}
+
+func snapshotStatusFile(path string) statSnapshot {
+	info, err := os.Stat(path)
+	if err != nil {
+		return statSnapshot{}
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return statSnapshot{exists: true, ino: st.Ino}
+	}
+	// Non-Unix (no syscall.Stat_t): fall back to existence only.
+	return statSnapshot{exists: true}
+}
+
+// TestSweepDoesNotTouchRealStatusFile guards a real incident found in review:
+// pkg/statusfile.NewFileStatusStore resolved its config root via
+// user.Current().HomeDir, which reads the OS passwd database via getpwuid and
+// IGNORES $HOME — unlike internal/cachefile.Dir, which uses os.UserHomeDir
+// for exactly this reason (see its doc comment). Dial's HOME isolation
+// (TestDialIsolatesHomeDirectory above) only covers os.UserHomeDir
+// consumers, so it never protected the status store: every router/lazy
+// Capture spawned a real leanproxy process that wrote its PID and an empty
+// server list to the OPERATOR'S real ~/.config/leanproxy/status/current.json
+// and then DELETED it on shutdown (statusStore.RemoveFile(), wired in
+// cmd/server.go), regardless of the isolated HOME the subprocess was given.
+// A sweep spawns 18 proxies; the last one to exit destroyed the operator's
+// live status file. Fixed in pkg/statusfile/file.go by switching every
+// user.Current().HomeDir use to os.UserHomeDir(), matching cachefile.
+//
+// A plain "no new file appeared" check (as in TestDialIsolatesHomeDirectory)
+// would NOT have caught this: current.json already exists for anyone running
+// a real leanproxy daemon, so the bug overwrites and deletes an EXISTING
+// entry rather than adding a new one. This test tracks that entry's inode
+// specifically, which changes if it is deleted and recreated (as the bug
+// did) but not if a live daemon merely rewrites it in place.
+func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds two binaries; skipped in -short")
+	}
+
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot determine real home dir: %v", err)
+	}
+	statusFile := filepath.Join(realHome, ".config", "leanproxy", "status", "current.json")
+	before := snapshotStatusFile(statusFile)
+
+	mock := buildMockMCP(t)
+	lp := buildLeanproxy(t)
+	// A small sweep across both proxy arms (native never spawns leanproxy, so
+	// it can't touch the status store) — enough spawns to reproduce the
+	// pattern that broke this, without repeating the full residency sweep.
+	for _, tools := range []int{2, 8} {
+		specs := BallastSpecs(mock, 2, tools/2)
+		for _, arm := range []Arm{ArmRouter, ArmLazy} {
+			if _, err := Capture(arm, lp, specs, t.TempDir()); err != nil {
+				t.Fatalf("capture arm=%s tools=%d: %v", arm, tools, err)
+			}
+		}
+	}
+
+	after := snapshotStatusFile(statusFile)
+	if before.exists && !after.exists {
+		t.Fatalf("sweep deleted the operator's real status file %s", statusFile)
+	}
+	if !before.exists && after.exists {
+		t.Fatalf("sweep created a status file at %s that did not exist before; a proxy spawned by the sweep wrote outside its isolated HOME", statusFile)
+	}
+	if before.exists && after.exists && before.ino != 0 && before.ino != after.ino {
+		t.Fatalf("sweep replaced the operator's real status file %s: inode changed %d -> %d (deleted and recreated)",
+			statusFile, before.ino, after.ino)
 	}
 }
