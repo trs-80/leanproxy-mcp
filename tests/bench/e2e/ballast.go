@@ -17,17 +17,38 @@ type Spec struct {
 }
 
 // BallastToolDescription is the description given to every ballast tool.
-// Its length (not padding — a real sentence, since --lazy-tools truncates
-// prose rather than counting it) is chosen so a ballast tool's tools/list
-// entry lands near 400 bytes, matching what live-snapshot.json
-// (tests/bench/fixtures/live-snapshot.json) measures for real upstream tools:
-// github 16400B/41 tools, garmin 40000B/100, intervals 4000B/10 — all exactly
-// 400 bytes/tool. At 308 characters this description exceeds stubDescChars
-// (160, pkg/mcp/discovery.go), so --lazy-tools truncation actually has prose
-// to cut; a shorter description no-ops truncation and understates lazy mode's
-// benefit (as the original 46-char DescriptionBase did — see
-// TestBallastToolIsRealisticWeight).
-const BallastToolDescription = "Searches the configured backend for items matching the given query and returns matching records with their metadata, pagination cursor, and total count. Supports filtering by status, date range, and owner; results are sorted by relevance unless a sort field is specified explicitly in the request parameters."
+//
+// live-snapshot.json is NOT a measurement — its own "source" field says
+// "seeded-from-docs-index-md", docs/benchmark-results.md calls its numbers a
+// placeholder, and its schema_bytes is exactly tool_count*400 for all three
+// servers, i.e. invented. Do not cite it as evidence for a byte target.
+//
+// The real numbers come from leanproxy's own persisted tool caches for
+// servers this repo actually proxies: ~/.config/leanproxy/toolcache/
+// codebase-memory.json (15 tools) and context7.json (2 tools). Measured
+// directly from those files: codebase-memory averages 1449 bytes/tool with a
+// median description of 610 characters; context7 averages 2240 bytes/tool
+// with a median description of 1218 characters. codebase-memory is the more
+// conservative of the two, so its description length is the target here:
+// 610 characters of real prose (not padding).
+//
+// This description is well past stubDescChars (160, pkg/mcp/discovery.go),
+// so --lazy-tools truncation has real prose to cut. The flip point was
+// measured directly (not just computed from stubDescChars+ellipsis+prefix):
+// at <=160 description characters, truncateDescription is a no-op and lazy
+// mode is strictly larger than native at every ballast size (the "servername_"
+// prefix is pure overhead with nothing to offset it — this is the bug the
+// previous version of this constant had). Between 160 and 165 characters the
+// ordering flips; at 165+ characters lazy is smaller than native and stays
+// smaller as descriptions grow further, since native's cost grows linearly
+// with description length while lazy's stays capped at stubDescChars.
+//
+// Even at 610 characters this constant cannot reach 1449 bytes/tool, because
+// mockmcp's inputSchema stays a single string-typed property
+// (tests/bench/mockmcp/server.go), deliberately left trivial so compactSchema
+// has nothing to compact — see the task-3 report for the resulting bias and
+// its measured net direction.
+const BallastToolDescription = "Searches the configured backend for items matching the given query and returns matching records with their metadata, pagination cursor, and total count. Use this when you need to look up items by keyword, tag, or free-text search rather than fetching a known ID directly. Supports filtering by status, date range, owner, and category; results are sorted by relevance unless a sort field is specified explicitly in the request parameters. Pass a smaller page_size for interactive use and a larger one for bulk export; the default page_size is 50 and the maximum is 500."
 
 // BallastSpecs returns `servers` synthetic MCP servers, each advertising
 // `toolsPerServer` tools. Ballast exists to move total schema weight past the

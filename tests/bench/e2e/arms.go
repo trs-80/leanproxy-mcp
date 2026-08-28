@@ -29,8 +29,13 @@ func AllArms() []Arm { return []Arm{ArmRouter, ArmLazy, ArmNative} }
 // native arm it dials each upstream directly and concatenates, which is what a
 // client with those servers configured would carry.
 func Capture(arm Arm, leanproxyBin string, specs []Spec, dir string) ([]byte, error) {
-	if arm == ArmNative {
+	switch arm {
+	case ArmNative:
 		return captureNative(specs)
+	case ArmRouter, ArmLazy:
+		// handled below
+	default:
+		return nil, fmt.Errorf("unknown arm %q", arm)
 	}
 
 	cfg, err := WriteConfig(dir, specs)

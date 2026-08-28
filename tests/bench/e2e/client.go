@@ -9,33 +9,53 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 )
 
 // Client is a minimal stdio JSON-RPC MCP client. It speaks just enough of the
 // protocol to capture a tools/list payload: initialize, initialized, tools/list.
 type Client struct {
-	cmd  *exec.Cmd
-	in   io.WriteCloser
-	out  *bufio.Reader
-	next int
+	cmd     *exec.Cmd
+	in      io.WriteCloser
+	out     *bufio.Reader
+	next    int
+	homeDir string // isolated HOME for cmd; removed in Close
 }
 
-// Dial starts bin with args and attaches to its stdin/stdout.
+// Dial starts bin with args and attaches to its stdin/stdout. The subprocess's
+// HOME (and USERPROFILE, for Windows) point at a private, per-Dial temp
+// directory instead of the operator's real one. Without this, a real run of
+// `go test ./tests/bench/e2e/` against the leanproxy-mcp binary wrote
+// ballast0.json/ballast1.json into the operator's actual
+// ~/.config/leanproxy/toolcache — internal/cachefile.Dir resolves the cache
+// root via os.UserHomeDir, i.e. $HOME, and Dial never set cmd.Env. Task 4
+// spawns the proxy hundreds of times across a sweep, so every spawn must be
+// contained. See TestDialIsolatesHomeDirectory.
 func Dial(bin string, args ...string) (*Client, error) {
+	home, err := os.MkdirTemp("", "leanproxy-e2e-home-*")
+	if err != nil {
+		return nil, fmt.Errorf("isolate home dir: %w", err)
+	}
+
 	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home)
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		os.RemoveAll(home)
 		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		os.RemoveAll(home)
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		os.RemoveAll(home)
 		return nil, fmt.Errorf("start %s: %w", bin, err)
 	}
-	return &Client{cmd: cmd, in: stdin, out: bufio.NewReaderSize(stdout, 1<<20), next: 1}, nil
+	return &Client{cmd: cmd, in: stdin, out: bufio.NewReaderSize(stdout, 1<<20), next: 1, homeDir: home}, nil
 }
 
 // call sends one JSON-RPC request and returns the raw `result` bytes.
@@ -108,10 +128,14 @@ func (c *Client) ToolsListRaw() ([]byte, error) {
 	return res, nil
 }
 
-// Close shuts stdin and waits for the subprocess to exit.
+// Close shuts stdin, waits for the subprocess to exit, and removes the
+// isolated HOME directory Dial created for it.
 func (c *Client) Close() error {
 	_ = c.in.Close()
 	_ = c.cmd.Process.Kill()
 	_, _ = c.cmd.Process.Wait()
+	if c.homeDir != "" {
+		_ = os.RemoveAll(c.homeDir)
+	}
 	return nil
 }

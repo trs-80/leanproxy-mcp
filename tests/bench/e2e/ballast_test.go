@@ -83,10 +83,21 @@ func TestWriteConfigIsLoadable(t *testing.T) {
 // RouterAndNative fail: with a one-property inputSchema and a description
 // under stubDescChars (pkg/mcp/discovery.go), lazy-mode compaction has
 // nothing to strip and the "servername_" prefix alone makes lazy bigger than
-// native. live-snapshot.json (tests/bench/fixtures/live-snapshot.json) puts
-// real upstream tools (github/garmin/intervals) at 400 bytes/tool; a ballast
-// tool must land in that neighborhood for the sweep to mean anything.
+// native. The realistic target comes from leanproxy's own persisted tool
+// caches (~/.config/leanproxy/toolcache/codebase-memory.json: 610-char
+// median description, 1449 bytes/tool average), NOT from
+// tests/bench/fixtures/live-snapshot.json — that file is a seeded placeholder
+// (see its own "source" field), not a measurement, and must never be cited as
+// one. mockmcp's inputSchema stays a single string-typed property
+// (deliberately, so compactSchema has nothing to compact — see task-3
+// report), so a ballast tool's total bytes can't reach 1449; this test guards
+// the one lever that matters here, description length, directly.
 func TestBallastToolIsRealisticWeight(t *testing.T) {
+	const wantDescMin, wantDescMax = 550, 700 // near codebase-memory's 610-char median
+	if got := len(BallastToolDescription); got < wantDescMin || got > wantDescMax {
+		t.Fatalf("BallastToolDescription is %d chars, want %d-%d (near codebase-memory's measured 610-char median)", got, wantDescMin, wantDescMax)
+	}
+
 	mock := buildMockMCP(t)
 	specs := BallastSpecs(mock, 1, 1)
 
@@ -103,9 +114,12 @@ func TestBallastToolIsRealisticWeight(t *testing.T) {
 		t.Fatalf("ToolsListRaw: %v", err)
 	}
 
-	const wantMin, wantMax = 350, 450
-	if got := len(raw); got < wantMin || got > wantMax {
-		t.Fatalf("single-tool tools/list payload is %d bytes, want %d-%d (realistic per-tool weight, see live-snapshot.json)", got, wantMin, wantMax)
+	// Well past the ~172-char arithmetic estimate (stubDescChars=160 +
+	// ellipsis 3 + prefix 9) and the empirically measured 160-165 char flip
+	// point, so truncation always has real prose to cut.
+	const wantMin = 650
+	if got := len(raw); got < wantMin {
+		t.Fatalf("single-tool tools/list payload is %d bytes, want >= %d", got, wantMin)
 	}
 }
 
