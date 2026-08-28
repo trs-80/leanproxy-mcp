@@ -1418,9 +1418,10 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     that re-sends the whole conversation, which is exactly the cost lazy
     loading trades residency for.
 
-    Success matches the expected tool by suffix, because the same tool is named
-    `codebase-memory_get_architecture` behind the proxy and `get_architecture`
-    natively; matching on suffix keeps arms comparable.
+    Success matches `expect_tool` as a substring of the recorded tool message,
+    because the same tool is named `codebase-memory_get_architecture` behind the
+    proxy and `get_architecture` natively. Substring rather than equality keeps
+    the arms comparable; fixtures should therefore name the unprefixed tool.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
@@ -1439,8 +1440,7 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     finally:
         conn.close()
 
-    needle = expect_tool.split("_")[-1] if "_" in expect_tool else expect_tool
-    succeeded = any(needle in (r[0] or "") for r in tool_rows)
+    succeeded = any(expect_tool in (r[0] or "") for r in tool_rows)
 
     return {
         "task_id": task_id,
