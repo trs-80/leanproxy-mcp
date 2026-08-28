@@ -156,8 +156,6 @@ func newEmbedderFromConfig(cfg embedder.Config, logger *slog.Logger) (embedder.E
 	switch cfg.Provider {
 	case embedder.ProviderOllama:
 		return embedder.NewOllamaEmbedder(*cfg.Ollama, logger)
-	case embedder.ProviderOpenAI:
-		return embedder.NewOpenAIEmbedder(*cfg.OpenAI, logger)
 	default:
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.Provider)
 	}

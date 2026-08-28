@@ -11,9 +11,12 @@ import (
 
 type Provider string
 
+// Only local providers exist. A hosted embedding provider would send tool
+// arguments — file paths, symbol names, search strings — to a third party to
+// compute a cache key, which no deployment under a data policy can allow. See
+// internal/netguard.
 const (
 	ProviderOllama Provider = "ollama"
-	ProviderOpenAI Provider = "openai"
 )
 
 type EmbedRequest struct {
@@ -61,7 +64,6 @@ type Embedder interface {
 type Config struct {
 	Provider Provider      `yaml:"provider"`
 	Ollama   *OllamaConfig `yaml:"ollama,omitempty"`
-	OpenAI   *OpenAIConfig `yaml:"openai,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -76,18 +78,6 @@ func (c Config) Validate() error {
 		}
 		if strings.TrimSpace(c.Ollama.Model) == "" {
 			return fmt.Errorf("embedder ollama: model must not be empty")
-		}
-		return nil
-	case ProviderOpenAI:
-		if c.OpenAI == nil {
-			return fmt.Errorf("embedder: openai config required when provider=%q", c.Provider)
-		}
-		c.OpenAI.withDefaults()
-		if err := c.OpenAI.validateKey(); err != nil {
-			return err
-		}
-		if strings.TrimSpace(c.OpenAI.Model) == "" {
-			return fmt.Errorf("embedder openai: model must not be empty")
 		}
 		return nil
 	default:

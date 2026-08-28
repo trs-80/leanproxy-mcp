@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/mmornati/leanproxy-mcp/internal/netguard"
 	"github.com/mmornati/leanproxy-mcp/pkg/utils"
 )
 
@@ -36,20 +37,41 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
 
-func (c *Config) applyDefaults() {
-	if c.LLMProvider == "" {
-		c.LLMProvider = "openai"
+// Validate rejects a configuration that would send manifests off this machine.
+//
+// Only checked when the compactor is enabled, so a disabled stanza with a
+// leftover hosted endpoint still loads — it just cannot run. Distillation reads
+// every tool name, description and parameter schema and hands them to a model,
+// so the endpoint has to be local. A model served from 127.0.0.1 (Ollama,
+// llama.cpp, LM Studio) satisfies this; a hosted API does not.
+func (c *Config) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if err := netguard.CheckInferenceEndpoint(c.LLMEndpoint); err != nil {
+		return fmt.Errorf("compactor: llm_endpoint: %w", err)
 	}
 	if c.LLMModel == "" {
-		c.LLMModel = "gpt-4o-mini"
+		return fmt.Errorf("compactor: llm_model must be set explicitly")
 	}
-	if c.LLMEndpoint == "" {
-		c.LLMEndpoint = "https://api.openai.com/v1/chat/completions"
-	}
+	return nil
+}
+
+// applyDefaults fills in only what is safe to assume.
+//
+// Provider, model and endpoint are deliberately NOT defaulted. They used to
+// resolve to openai / gpt-4o-mini / api.openai.com, so enabling distillation
+// without naming a provider shipped the whole tool manifest — every tool name,
+// description and parameter schema — to a third party. Leaving them empty makes
+// an unconfigured compactor fail closed at Validate instead.
+func (c *Config) applyDefaults() {
 	if c.CacheDir == "" {
 		usr, err := os.UserHomeDir()
 		if err == nil {

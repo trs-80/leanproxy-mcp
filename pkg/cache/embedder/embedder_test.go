@@ -103,17 +103,13 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "ollama config required",
 		},
 		{
-			name:    "openai missing config",
-			cfg:     Config{Provider: ProviderOpenAI},
-			wantErr: "openai config required",
+			name:    "openai is no longer a provider",
+			cfg:     Config{Provider: Provider("openai")},
+			wantErr: `unknown provider "openai"`,
 		},
 		{
 			name: "valid ollama config",
 			cfg:  Config{Provider: ProviderOllama, Ollama: &OllamaConfig{URL: "http://localhost:11434", Model: "m"}},
-		},
-		{
-			name: "valid openai config",
-			cfg:  Config{Provider: ProviderOpenAI, OpenAI: &OpenAIConfig{APIKey: "sk-test"}},
 		},
 		{
 			name:    "empty ollama url",
@@ -322,49 +318,11 @@ func TestOllamaConfigValidateURL(t *testing.T) {
 	}
 }
 
-func TestOpenAIConfigValidate(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-
-	cfg := &OpenAIConfig{}
-	if err := cfg.validateKey(); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
-		t.Errorf("expected OPENAI_API_KEY error, got: %v", err)
-	}
-
-	cfg2 := &OpenAIConfig{APIKey: "sk-test"}
-	if err := cfg2.validateKey(); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	cfg2.withDefaults()
-	if cfg2.Model != defaultOpenAIModel {
-		t.Errorf("default model = %q, want %q", cfg2.Model, defaultOpenAIModel)
-	}
-}
-
 func TestNewOllamaEmbedderBadURL(t *testing.T) {
 	_, err := NewOllamaEmbedder(OllamaConfig{URL: "://bad"}, nil)
 	if err == nil {
 		t.Error("expected error for bad URL")
 	}
-}
-
-func TestNewOpenAIEmbedderNoKey(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-
-	_, err := NewOpenAIEmbedder(OpenAIConfig{}, nil)
-	if err == nil {
-		t.Error("expected error for missing API key")
-	}
-}
-
-func TestNewOpenAIEmbedderWithKey(t *testing.T) {
-	e, err := NewOpenAIEmbedder(OpenAIConfig{APIKey: "sk-test"}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if e.apiKey != "sk-test" {
-		t.Errorf("apiKey = %q, want %q", e.apiKey, "sk-test")
-	}
-	e.Close()
 }
 
 func TestOllamaEmbedPayloadTooLarge(t *testing.T) {

@@ -57,7 +57,6 @@ var serveFlags struct {
 	embedProvider      string
 	ollamaURL          string
 	ollamaModel        string
-	openAIModel        string
 	embedPoolSize      int
 	metricsBind        string
 	modelRouterEnabled bool
@@ -133,10 +132,9 @@ func init() {
 	serveCmd.Flags().StringVar(&serveFlags.upstreamURL, "upstream", "http://localhost:8081", "Upstream JSON-RPC server URL")
 	serveCmd.Flags().StringVar(&serveFlags.providersConfig, "providers-config", "", "Path to providers config file for provider detection")
 	serveCmd.Flags().StringVar(&serveFlags.cacheStrategy, "cache-strategy", "off", "Cache breakpoint injection strategy for Anthropic requests: off (default, no injection), aggressive (last system + last tool), balanced (largest block only)")
-	serveCmd.Flags().StringVar(&serveFlags.embedProvider, "embed-provider", "", "Embedding provider: ollama or openai (empty = disabled)")
+	serveCmd.Flags().StringVar(&serveFlags.embedProvider, "embed-provider", "", "Embedding provider: ollama (empty = disabled). Local only.")
 	serveCmd.Flags().StringVar(&serveFlags.ollamaURL, "ollama-url", "http://localhost:11434", "Ollama server URL")
 	serveCmd.Flags().StringVar(&serveFlags.ollamaModel, "ollama-model", "nomic-embed-text", "Ollama embedding model")
-	serveCmd.Flags().StringVar(&serveFlags.openAIModel, "openai-model", "text-embedding-3-small", "OpenAI embedding model")
 	serveCmd.Flags().IntVar(&serveFlags.embedPoolSize, "embed-pool-size", 4, "Embedder worker pool size")
 	serveCmd.Flags().StringVar(&serveFlags.metricsBind, "metrics-bind", "", "Metrics endpoint bind address (e.g. 127.0.0.1:9090). Set to 'off' or empty to disable.")
 	serveCmd.Flags().BoolVar(&serveFlags.modelRouterEnabled, "model-router", false, "Enable per-tool model routing based on complexity_tier")
@@ -367,12 +365,8 @@ func runServe(cmd *cobra.Command, args []string) {
 				URL:   serveFlags.ollamaURL,
 				Model: serveFlags.ollamaModel,
 			}
-		case embedder.ProviderOpenAI:
-			embedCfg.OpenAI = &embedder.OpenAIConfig{
-				Model: serveFlags.openAIModel,
-			}
 		default:
-			logError("unknown embed provider %q: must be 'ollama' or 'openai'", serveFlags.embedProvider)
+			logError("unknown embed provider %q: only 'ollama' is supported (embeddings are computed locally)", serveFlags.embedProvider)
 		}
 		if err := bouncer.SetupEmbedder(embedCfg, embedder.PoolConfig{Size: serveFlags.embedPoolSize}); err != nil {
 			logError("embedder setup failed (failing startup): %v", err)

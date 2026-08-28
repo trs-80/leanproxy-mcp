@@ -184,38 +184,6 @@ func TestSetupEmbedderOllama(t *testing.T) {
 	SetGlobalEmbedPool(nil)
 }
 
-func TestSetupEmbedderOpenAI(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	cfg := embedder.Config{
-		Provider: embedder.ProviderOpenAI,
-		OpenAI:   &embedder.OpenAIConfig{APIKey: "sk-test"},
-	}
-	if err := SetupEmbedder(cfg, embedder.PoolConfig{Size: 1}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pool := GlobalEmbedPool()
-	if pool == nil {
-		t.Fatal("expected non-nil global pool after SetupEmbedder")
-	}
-	pool.Close()
-	SetGlobalEmbedPool(nil)
-}
-
-func TestSetupEmbedderMissingOpenAIKey(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	cfg := embedder.Config{
-		Provider: embedder.ProviderOpenAI,
-		OpenAI:   &embedder.OpenAIConfig{},
-	}
-	err := SetupEmbedder(cfg, embedder.PoolConfig{Size: 1})
-	if err == nil {
-		t.Fatal("expected error for missing API key")
-	}
-	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
-		t.Errorf("expected OPENAI_API_KEY in error, got: %v", err)
-	}
-}
-
 func TestSetupEmbedderInvalidURL(t *testing.T) {
 	cfg := embedder.Config{
 		Provider: embedder.ProviderOllama,
