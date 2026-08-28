@@ -125,6 +125,17 @@ bench-snapshot: ## Refresh live MCP snapshot (requires reachable MCP servers)
 		-config tests/bench/fixtures/live-snapshot.yaml \
 		-out   tests/bench/fixtures/live-snapshot.json
 
+.PHONY: bench-e2e
+bench-e2e: ## Run the free residency sweep (no LLM, no coins, CI-safe)
+	@echo "Running e2e residency sweep across all three arms..."
+	@mkdir -p bench-results
+	$(GO) test ./tests/bench/e2e/ -run 'TestResidency' -v -timeout 10m
+
+.PHONY: bench-e2e-live
+bench-e2e-live: ## Run the live A/B sweep (SPENDS COINS; requires LEANPROXY_AB_LIVE=1)
+	@echo "Running live A/B sweep — this spends coins."
+	LEANPROXY_AB_LIVE=1 python3 scripts/abbench.py --out bench-results
+
 .PHONY: test-all
 test-all: lint test test-e2e ## Run lint, unit tests, and E2E tests
 
