@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 )
 
 // Arm is one of the three client-visible configurations under comparison.
@@ -66,29 +67,56 @@ func Capture(arm Arm, leanproxyBin string, specs []Spec, dir string) ([]byte, er
 	// The router arm's client-visible tools/list is a fixed 3-tool wrapper
 	// (list_tools/invoke_tool/search_tools) regardless of what is behind it —
 	// TestCaptureRouterExposesWrapperTools guards that shape, but a capture
-	// with an unreachable or misconfigured upstream would still produce that
-	// same valid, byte-identical payload, silently measuring an empty proxy
-	// as if it fronted the full ballast. Confirm the wrapper can actually
-	// reach the first configured server before trusting the measurement.
-	if arm == ArmRouter && len(specs) > 0 {
-		if err := verifyRouterReachable(c, specs[0]); err != nil {
-			return nil, fmt.Errorf("router reachability check for arm %s: %w", arm, err)
+	// where one or more upstreams are unreachable or misconfigured would
+	// still produce that same valid, byte-identical payload, silently
+	// measuring a partially- or fully-empty proxy as if it fronted the full
+	// ballast. Confirm the wrapper can actually reach EVERY configured
+	// server before trusting the measurement — checking only the first spec
+	// would still pass with e.g. specs[1] unreachable while ballast_tools
+	// claims the count from all of them.
+	if arm == ArmRouter {
+		for _, spec := range specs {
+			if err := verifyRouterReachable(c, spec); err != nil {
+				return nil, fmt.Errorf("router reachability check for arm %s: %w", arm, err)
+			}
 		}
 	}
 
 	return payload, nil
 }
 
-// verifyRouterReachable calls the router's list_tools wrapper for the given
-// server and confirms its first tool name appears in the result text.
-func verifyRouterReachable(c *Client, first Spec) error {
-	res, err := c.CallTool("list_tools", map[string]any{"server_name": first.Name})
+// verifyRouterReachable calls the router's list_tools wrapper for spec and
+// confirms it reports at least one cached tool for it. handleListTools
+// (pkg/mcp/discovery.go) returns a successful response with a "<server>
+// tools (<n>):" header when it can reach the server, and a different,
+// still-successful-looking text ("Server '<server>' not found" or "No tools
+// available on server '<server>'") when it cannot — neither is a JSON-RPC
+// error, so ToolsListRaw alone can't tell them apart. This checks the
+// reported count itself rather than any particular tool's name, so it makes
+// no assumption about how the server names its tools (a generic Spec need
+// not use mockmcp's "<prefix>_<n>" convention).
+func verifyRouterReachable(c *Client, spec Spec) error {
+	res, err := c.CallTool("list_tools", map[string]any{"server_name": spec.Name})
 	if err != nil {
-		return fmt.Errorf("list_tools(%s): %w", first.Name, err)
+		return fmt.Errorf("list_tools(%s): %w", spec.Name, err)
 	}
-	want := first.Name + "_tool_0"
-	if !bytes.Contains(res, []byte(want)) {
-		return fmt.Errorf("list_tools(%s) result does not mention %q: %s", first.Name, want, res)
+
+	marker := []byte(spec.Name + " tools (")
+	idx := bytes.Index(res, marker)
+	if idx < 0 {
+		return fmt.Errorf("list_tools(%s) did not report a tool count (server unreachable or misconfigured): %s", spec.Name, res)
+	}
+	rest := res[idx+len(marker):]
+	end := bytes.IndexByte(rest, ')')
+	if end < 0 {
+		return fmt.Errorf("list_tools(%s) malformed tool count: %s", spec.Name, res)
+	}
+	count, err := strconv.Atoi(string(rest[:end]))
+	if err != nil {
+		return fmt.Errorf("list_tools(%s) tool count not numeric: %s", spec.Name, res)
+	}
+	if count == 0 {
+		return fmt.Errorf("list_tools(%s) reports 0 tools; router cannot reach this server", spec.Name)
 	}
 	return nil
 }

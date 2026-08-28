@@ -126,6 +126,18 @@ func snapshotStatusFile(path string) statSnapshot {
 // entry rather than adding a new one. This test tracks that entry's inode
 // specifically, which changes if it is deleted and recreated (as the bug
 // did) but not if a live daemon merely rewrites it in place.
+//
+// CRITICAL-1's actual shape is CREATE-then-DELETE: the buggy store creates
+// its own file at the real path, then deletes it on shutdown. On a machine
+// with no pre-existing status file — every CI runner, and any developer
+// machine with no live leanproxy daemon — before.exists and after.exists are
+// both false regardless of whether the fix is in place, so a bare
+// before/after existence-and-inode check never exercises the delete branch
+// and passes vacuously. To make this a real guard everywhere, plant a
+// sentinel file first whenever nothing already exists, so there is always
+// something the bug's delete step would have to destroy.
+var sentinelStatusContent = []byte(`{"pid":-1,"sentinel":"TestSweepDoesNotTouchRealStatusFile"}`)
+
 func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds two binaries; skipped in -short")
@@ -135,8 +147,25 @@ func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot determine real home dir: %v", err)
 	}
-	statusFile := filepath.Join(realHome, ".config", "leanproxy", "status", "current.json")
+	statusDir := filepath.Join(realHome, ".config", "leanproxy", "status")
+	statusFile := filepath.Join(statusDir, "current.json")
+
 	before := snapshotStatusFile(statusFile)
+	sentinelPlanted := false
+	if !before.exists {
+		if err := os.MkdirAll(statusDir, 0700); err != nil {
+			t.Fatalf("prepare status dir %s: %v", statusDir, err)
+		}
+		if err := os.WriteFile(statusFile, sentinelStatusContent, 0600); err != nil {
+			t.Fatalf("plant sentinel status file %s: %v", statusFile, err)
+		}
+		t.Cleanup(func() { os.Remove(statusFile) })
+		sentinelPlanted = true
+		before = snapshotStatusFile(statusFile)
+		if !before.exists {
+			t.Fatalf("planted sentinel status file %s but it does not exist immediately after writing it", statusFile)
+		}
+	}
 
 	mock := buildMockMCP(t)
 	lp := buildLeanproxy(t)
@@ -153,14 +182,26 @@ func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 	}
 
 	after := snapshotStatusFile(statusFile)
-	if before.exists && !after.exists {
-		t.Fatalf("sweep deleted the operator's real status file %s", statusFile)
+	if !after.exists {
+		t.Fatalf("sweep deleted the real status file %s", statusFile)
 	}
-	if !before.exists && after.exists {
-		t.Fatalf("sweep created a status file at %s that did not exist before; a proxy spawned by the sweep wrote outside its isolated HOME", statusFile)
-	}
-	if before.exists && after.exists && before.ino != 0 && before.ino != after.ino {
-		t.Fatalf("sweep replaced the operator's real status file %s: inode changed %d -> %d (deleted and recreated)",
+	if before.ino != 0 && before.ino != after.ino {
+		t.Fatalf("sweep replaced the real status file %s: inode changed %d -> %d (deleted and recreated)",
 			statusFile, before.ino, after.ino)
+	}
+	if sentinelPlanted {
+		// Nothing legitimate could have rewritten a file under this test's
+		// own sentinel name in the seconds this test ran — unlike the
+		// inode-only check above, which must tolerate a live daemon
+		// periodically rewriting ITS OWN pre-existing file in place, a
+		// planted sentinel can be checked for byte-identical content too.
+		got, err := os.ReadFile(statusFile)
+		if err != nil {
+			t.Fatalf("read status file after sweep: %v", err)
+		}
+		if string(got) != string(sentinelStatusContent) {
+			t.Fatalf("sweep modified the planted sentinel status file %s: got %q, want %q",
+				statusFile, got, sentinelStatusContent)
+		}
 	}
 }
