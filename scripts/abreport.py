@@ -45,13 +45,15 @@ Honesty rules this script enforces, none of them optional:
 `residency_tokens` (and therefore `net_tokens`, which is derived from it) is
 an ESTIMATE: ceil(payload_bytes/4) from reporter.NewEstimator(), not real
 tokenizer output — see the footnote the table prints. `net_tokens` is also a
-structural FLOOR for the proxy arms specifically: it only counts the
-schema payload as it exists before any tool is called, but a tool's full
-schema (native) or the router's discovery response (router) enters the
-conversation as soon as one is actually used, and is re-sent every
-subsequent turn. Compare the printed `input_tokens(observed)` — real token
-accounting from the live run — against `residency* x turns` and treat a wide
-gap as evidence this model is optimistic for that row.
+structural FLOOR for every arm, and the size of the gap is arm-dependent: it
+only counts the schema payload as it exists before any tool is called, but a
+tool's full schema (lazy — the stub is replaced by the real one) or the
+router's discovery response (router) enters the conversation as soon as one
+is actually used and is re-sent every subsequent turn, while ordinary
+conversation growth (tool-result content, history) is uncounted for every
+arm regardless. Compare the printed `input_tokens observed` — real token
+accounting from the live run, including cached tokens — against
+`residency* x turns` as a rough cross-check, not a precise one.
 
 Reads result files only. Never writes to ~/.bob/ or ~/.config/, and spends
 no money — there is nothing here to gate behind LEANPROXY_AB_LIVE.
@@ -82,6 +84,24 @@ MIN_SUCCESS_RATE_FOR_VERDICT = 0.5
 # stable under the single smallest plausible miss" — not a claim that a
 # borrowed turn count is only ever off by exactly one.
 TURN_SENSITIVITY = 1
+
+# A perturbed turn count is never allowed below this. A model call cannot
+# take zero turns, so testing a derived row against a hypothetical
+# zero-turn run isn't testing a "one-turn error" — it's testing a task that
+# never happened, and it trivially zeroes that side's entire cost (review
+# N2: this floor cut the false-FLIPS rate on the review's own reproduction
+# fixture from 14/14 verdicts to 3/14, with no loss on the genuine ones).
+MIN_PLAUSIBLE_TURNS = 1
+
+# Fewer samples than this backing a comparison — paired tasks if the
+# comparison paired at all, otherwise the smaller of the two arms' own
+# sample counts — and no verdict is confident enough to print as a number.
+# abbench.py's own paired_deltas() uses the identical floor
+# (MIN_PAIRS_FOR_CONSISTENCY = 2) for the same reason: a single pair (or a
+# single unpaired sample) cannot disagree with itself, so treating it as a
+# confident finding is not defensible regardless of how large the delta
+# looks (review N8).
+MIN_PAIRED_SAMPLES_FOR_VERDICT = 2
 
 
 # ---------------------------------------------------------------------------
@@ -264,11 +284,12 @@ def combine(residency: list, live: list) -> list:
     rather than guessed at.
 
     Each row also carries the sample count, attempted count, success rate,
-    turn-count spread, an `input_tokens` cross-check where the live records
-    have it, and the raw successful `samples` themselves (carrying each
-    sample's `task` id) — the last so a caller can compute a same-task-
-    paired delta between two arms' rows rather than subtracting two
-    independently-averaged means.
+    turn-count spread, an observed-input-token cross-check (input_tokens +
+    cache_read + cache_write — see the comment above where it's computed)
+    where the live records have it, and the raw successful `samples`
+    themselves (carrying each sample's `task` id) — the last so a caller can
+    compute a same-task-paired delta between two arms' rows rather than
+    subtracting two independently-averaged means.
     """
     attempted = {}  # arm -> level -> ALL live records at that level (scored or crashed)
     for r in live:
@@ -302,7 +323,18 @@ def combine(residency: list, live: list) -> list:
         attempted_n = len(attempted[arm][source_level])
         turns_vals = [s["turns"] for s in samples]
         output_vals = [s["output_tokens"] for s in samples]
-        input_vals = [s["input_tokens"] for s in samples if "input_tokens" in s]
+        # The real observed input cost, for the cross-check in _print_table:
+        # abbench.py's `input_tokens` (costs["input"]) is UNCACHED input
+        # only — the tool-schema catalogue served from cache lands in
+        # `cache_read` instead, which combine() used to ignore entirely
+        # (review N5). Under this project's flat per-token billing there is
+        # no cache discount to model, so the honest total is all three
+        # summed; a record missing `input_tokens` is treated as having no
+        # observed-cost data at all, not as contributing 0.
+        input_vals = [
+            s["input_tokens"] + s.get("cache_read", 0) + s.get("cache_write", 0)
+            for s in samples if "input_tokens" in s
+        ]
         turns = statistics.mean(turns_vals)
         output = statistics.mean(output_vals)
 
@@ -348,8 +380,10 @@ def _sample_net(residency_tokens, sample: dict, turn_delta: int = 0):
     `derived` row — see _paired_delta's `arm_turn_delta`/`native_turn_delta`
     parameters, which apply it conditionally on `origin`. This helper
     itself does not know or care which; it just adds the delta if asked.
+    The perturbed turn count is floored at MIN_PLAUSIBLE_TURNS, not 0 — see
+    that constant's docstring (review N2).
     """
-    turns = max(sample["turns"] + turn_delta, 0) if turn_delta else sample["turns"]
+    turns = max(sample["turns"] + turn_delta, MIN_PLAUSIBLE_TURNS) if turn_delta else sample["turns"]
     return residency_tokens * turns + sample["output_tokens"]
 
 
@@ -357,11 +391,12 @@ def _row_net(row: dict, turn_delta: int = 0):
     """`row`'s own aggregate net_tokens, optionally with its (mean) turn
     count perturbed — used only by _paired_delta's unpaired fallback, where
     there is no per-task sample to perturb individually. A no-op for a
-    `measured` row: its turn count is real, not a guess.
+    `measured` row: its turn count is real, not a guess. Floored the same
+    way as _sample_net (review N2).
     """
     if row.get("origin") != "derived" or not turn_delta:
         return row["net_tokens"]
-    turns = max(row["turns"] + turn_delta, 0)
+    turns = max(row["turns"] + turn_delta, MIN_PLAUSIBLE_TURNS)
     return row["residency_tokens"] * turns + row["output_tokens"]
 
 
@@ -445,16 +480,30 @@ ESTIMATE_FOOTNOTE = (
 )
 
 UNDERSTATEMENT_FOOTNOTE = (
-    "* net_tokens is a FLOOR for router and lazy, not a ceiling: "
-    "residency_tokens is the tool-schema payload before any tool is called. "
-    "Once a tool is actually used, its full schema (native) or the router's "
+    "* net_tokens is a FLOOR for every arm, and the size of the gap is "
+    "arm-dependent: residency_tokens is only the tool-schema payload before "
+    "any tool is called. Once a tool is actually used, its full schema "
+    "(lazy — the compact stub is replaced by the real one) or the router's "
     "discovery response (router) enters the conversation as tool-result "
-    "content and is re-sent every subsequent turn — this model does not "
-    "count that growth for the proxy arms, while native already carries "
-    "every schema from turn one. Compare each row's 'input_tokens observed' "
-    "(real token accounting from the live run) against 'residency* x turns' "
-    "and treat a wide gap as evidence this model is optimistic for that row."
+    "content and is re-sent every subsequent turn; native already carries "
+    "every schema from turn one, so it has no equivalent growth left to "
+    "happen, but ordinary conversation growth (tool-result content, "
+    "history) is uncounted for every arm regardless. Compare each row's "
+    "'input_tokens observed' (real token accounting from the live run, "
+    "including cached tokens) against 'residency* x turns' as a rough "
+    "cross-check, not a precise one — a wide gap in EITHER direction means "
+    "this row's real conversation diverged from the model's simplifying "
+    "assumptions, and is worth inspecting directly rather than trusted at "
+    "face value."
 )
+
+
+def _source_note(row: dict) -> str:
+    """" (from ballast=N)" when a row's n/succ%/attempted/turns are another
+    level's samples, not this row's own — printed wherever those numbers
+    appear, so they are never presented as if measured at this row's own
+    level (review N3)."""
+    return f" (from ballast={row['source_level']})" if row["origin"] == "derived" else ""
 
 
 def _print_table(rows: list) -> None:
@@ -470,7 +519,7 @@ def _print_table(rows: list) -> None:
         detail = f"           turns {r['turns_min']:.0f}-{r['turns_max']:.0f} (n={r['n']}"
         if r["success_rate"] is not None:
             detail += f", {r['success_rate'] * 100:.0f}% of {r['attempted']} attempted"
-        detail += ")"
+        detail += f"){_source_note(r)}"
         if r["input_tokens_observed"] is not None:
             modelled = r["residency_tokens"] * r["turns"]
             ratio = (r["input_tokens_observed"] / modelled) if modelled else float("inf")
@@ -532,19 +581,49 @@ def _print_omitted_arms(residency: list, live: list, rows: list) -> None:
             print(f"  {arm}: all {crashed} live run(s) crashed before scoring — no usable data")
 
 
+def _print_unswept_live_arms(residency: list, live: list) -> None:
+    """The mirror of _print_omitted_arms: an arm with live data but no
+    residency measurement at all. Layer 1 sweeps every arm, so this should
+    not happen in practice, but combine() silently drops such an arm's live
+    records (there is no residency row to join them to), and a silent drop
+    is exactly what this whole script exists to refuse (review N9).
+    """
+    residency_arms = {r["arm"] for r in residency if "arm" in r}
+    live_arms = {r["arm"] for r in live if "arm" in r}
+    extra = sorted(live_arms - residency_arms)
+    if not extra:
+        return
+    print("\nArms with live data but no residency measurement (also omitted):")
+    for arm in extra:
+        n = sum(1 for r in live if r.get("arm") == arm)
+        print(f"  {arm}: {n} live run(s) exist but Layer 1 never swept this arm — "
+              f"nothing to join them to")
+
+
 def _print_breakeven(rows: list) -> None:
     """The line this harness exists to produce: does each proxy arm save net
     tokens per task versus native, at which ballast level, stated plainly
     enough — including where the claim is fragile — for a reader who never
     ran the sweep to trust it or distrust it correctly.
+
+    An arm's presence here is built FROM `rows`, the same list the table and
+    the omission notices are built from — not recomputed independently — so
+    this section cannot disagree with them about which arms were ever
+    measured (review N1: an earlier version separately tracked "first save"
+    starting from an unconditional per-arm dict, so an omitted arm silently
+    fell through to "never saves", stating a confident negative finding
+    about an arm the omission notice, ten lines above, said was never run).
     """
     by_level = {}
     for r in rows:
         by_level.setdefault(r["ballast_tools"], {})[r["arm"]] = r
+    arms_with_rows = {r["arm"] for r in rows}
 
     print("\nBreakeven (net tokens per task, proxy arm vs native; paired by task id where possible):")
-    printed = False
+    printed_any_line = False
     first_save = {arm: None for arm in PROXY_ARMS}
+    printable_count = {arm: 0 for arm in PROXY_ARMS}
+    suppressed_count = {arm: 0 for arm in PROXY_ARMS}
 
     for level in sorted(by_level):
         native = by_level[level].get(BASELINE_ARM)
@@ -554,26 +633,47 @@ def _print_breakeven(rows: list) -> None:
             got = by_level[level].get(arm)
             if got is None:
                 continue
-            printed = True
-
-            unreliable = []
-            if got["success_rate"] is not None and got["success_rate"] < MIN_SUCCESS_RATE_FOR_VERDICT:
-                unreliable.append(f"{arm} succeeded {got['success_rate'] * 100:.0f}%")
-            if native["success_rate"] is not None and native["success_rate"] < MIN_SUCCESS_RATE_FOR_VERDICT:
-                unreliable.append(f"native succeeded {native['success_rate'] * 100:.0f}%")
-            if unreliable:
-                print(f"  ballast={level:<4} {arm:<7} UNRELIABLE — {'; '.join(unreliable)} "
-                      f"(below the {MIN_SUCCESS_RATE_FOR_VERDICT * 100:.0f}% success threshold — "
-                      f"mostly gave up rather than completed the task; no verdict printed)")
-                continue
+            printed_any_line = True
 
             delta, pairs = _paired_delta(got, native)
+            # The confidence-relevant sample count differs by path: a paired
+            # comparison is backed by `pairs` shared tasks; an unpaired one
+            # (no shared task ids at all) falls back to each side's own row
+            # aggregate, so its confidence is bounded by the SMALLER side's
+            # sample count, not by "0 pairs" (review N8).
+            effective_n = pairs if pairs else min(got["n"], native["n"])
+
+            reasons = []
+            if got["success_rate"] is not None and got["success_rate"] < MIN_SUCCESS_RATE_FOR_VERDICT:
+                reasons.append(f"{arm} succeeded {got['success_rate'] * 100:.0f}%{_source_note(got)}")
+            if native["success_rate"] is not None and native["success_rate"] < MIN_SUCCESS_RATE_FOR_VERDICT:
+                reasons.append(f"native succeeded {native['success_rate'] * 100:.0f}%{_source_note(native)}")
+            if effective_n < MIN_PAIRED_SAMPLES_FOR_VERDICT:
+                kind = "paired sample" if pairs else "sample"
+                reasons.append(f"only {effective_n} {kind}(s) backing it (need >= {MIN_PAIRED_SAMPLES_FOR_VERDICT})")
+
+            if reasons:
+                suppressed_count[arm] += 1
+                print(f"  ballast={level:<4} {arm:<7} UNRELIABLE — {'; '.join(reasons)} "
+                      f"— no verdict printed")
+                continue
+
+            printable_count[arm] += 1
             verdict = "saves" if delta < 0 else "COSTS MORE"
             origin = "measured" if got["origin"] == native["origin"] == "measured" else "derived"
             flip = _verdict_flips(got, native) if origin == "derived" else False
 
             tags = [origin]
-            tags.append(f"paired n={pairs}" if pairs else "unpaired")
+            tags.append(f"paired n={pairs}" if pairs else f"unpaired, n={effective_n}")
+            succ_bits = []
+            if got["success_rate"] is not None:
+                succ_bits.append(f"{arm} succ={got['success_rate'] * 100:.0f}%{_source_note(got)}")
+            if native["success_rate"] is not None:
+                succ_bits.append(f"native succ={native['success_rate'] * 100:.0f}%{_source_note(native)}")
+            if succ_bits:
+                tags.append("; ".join(succ_bits))
+            if got["tie_broken"] or native["tie_broken"]:
+                tags.append("tie-break")
             if origin == "derived":
                 tags.append("FLIPS under +-1 turn error" if flip else "stable under +-1 turn error")
             if arm == "router" and origin == "derived":
@@ -583,20 +683,51 @@ def _print_breakeven(rows: list) -> None:
                   f"tok/task vs native  [{', '.join(tags)}]")
 
             if verdict == "saves" and first_save[arm] is None:
-                first_save[arm] = (level, flip)
+                # Snapshot how many EARLIER levels for this arm were
+                # suppressed, so the summary line can say so — a reader
+                # must not misread "first saves at ballast=100" as "loses
+                # below 100" when levels 2-50 in fact produced no verdict
+                # at all (review N4).
+                first_save[arm] = (level, flip, suppressed_count[arm])
 
-    if not printed:
+    not_measured = [a for a in PROXY_ARMS if a not in arms_with_rows]
+
+    if not printed_any_line:
         print("  (no ballast level has both a native and a proxy-arm data point)")
+        if not_measured:
+            print("\nFirst breakeven per arm:")
+            print(f"  ({', '.join(not_measured)}: not measured at all — see the "
+                  f"omission note above, not repeated here)")
         return
 
     print("\nFirst breakeven per arm:")
     for arm in PROXY_ARMS:
-        if first_save[arm] is None:
-            print(f"  {arm}: never saves net tokens vs native across the swept range")
-            continue
-        level, flip = first_save[arm]
-        caveat = " (fragile: this verdict flips under a +-1 turn error)" if flip else ""
-        print(f"  {arm}: first saves net tokens vs native at ballast_tools={level}{caveat}")
+        if arm not in arms_with_rows:
+            continue  # not measured at all — the omission note above already says so
+        if first_save[arm] is not None:
+            level, flip, suppressed_before = first_save[arm]
+            caveat = " (fragile: this verdict flips under a +-1 turn error)" if flip else ""
+            earlier = ""
+            if suppressed_before:
+                earlier = (f"; {suppressed_before} earlier ballast level(s) produced no "
+                           f"printable verdict (not a loss — see UNRELIABLE lines above)")
+            print(f"  {arm}: first saves net tokens vs native at ballast_tools={level}"
+                  f"{caveat}{earlier}")
+        elif printable_count[arm] > 0:
+            note = ""
+            if suppressed_count[arm]:
+                note = (f"; {suppressed_count[arm]} more ballast level(s) produced no "
+                        f"printable verdict at all (see UNRELIABLE lines above)")
+            print(f"  {arm}: never saves net tokens vs native at any of the "
+                  f"{printable_count[arm]} ballast level(s) with a printable verdict{note}")
+        else:
+            print(f"  {arm}: no verdict was printable at ANY ballast level — every "
+                  f"comparison was UNRELIABLE (see above); this arm's saving/costing "
+                  f"is genuinely unknown, not zero")
+
+    if not_measured:
+        print(f"  ({', '.join(not_measured)}: not measured at all — see the omission "
+              f"note above, not repeated here)")
 
 
 def main(argv=None) -> int:
@@ -628,6 +759,7 @@ def main(argv=None) -> int:
     _print_table(rows)
     _print_incomplete(live, visible_arms)
     _print_omitted_arms(residency, live, rows)
+    _print_unswept_live_arms(residency, live)
     _print_breakeven(rows)
     return 0
 
