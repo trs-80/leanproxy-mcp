@@ -149,8 +149,13 @@ endif
 	@# it mid-sweep would swap the proxy under a running session.
 	@mkdir -p $(BENCH_BIN_DIR)
 	$(GO) build -trimpath -o $(BENCH_BIN_DIR)/$(BINARY_NAME) .
+	@# The default sweep includes a 100-tool ballast point, and abbench
+	@# refuses any non-zero point without --mock-bin. Without this the target
+	@# could not run its own default.
+	$(GO) build -trimpath -o $(BENCH_BIN_DIR)/mockmcp ./tests/bench/mockmcp/cmd
 	python3 scripts/abbench.py --out bench-results \
-		--leanproxy-bin $(BENCH_BIN_DIR)/$(BINARY_NAME)
+		--leanproxy-bin $(BENCH_BIN_DIR)/$(BINARY_NAME) \
+		--mock-bin $(BENCH_BIN_DIR)/mockmcp
 
 .PHONY: test-all
 test-all: lint test test-e2e ## Run lint, unit tests, and E2E tests
