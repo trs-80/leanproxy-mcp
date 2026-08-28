@@ -474,11 +474,64 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# paired analysis
+# ---------------------------------------------------------------------------
+
+
+def paired_deltas(records: list, baseline: str, arm: str, field: str) -> dict:
+    """Per-task deltas between two arms, paired on task id.
+
+    Pairing is the primary statistic. Observed per-task cost spans an order of
+    magnitude, so an unpaired mean over five tasks would report task difficulty
+    rather than arm effect. Tasks present in only one arm are dropped: an
+    unpaired point cannot contribute a delta. The same reasoning applies when
+    a task IS present in both arms but one side's record has no `field` at
+    all — a `run_task` failure records `succeeded: False` and an `error`
+    instead of token/cost metrics (see `main`), and a bare `KeyError` there
+    would crash the whole sweep's reporting instead of just excluding that
+    one unpaired point.
+
+    `consistent` reports whether every paired delta shares a sign. When it is
+    False the caller should report "no detectable effect" rather than a point
+    estimate.
+    """
+    by_arm = {}
+    for r in records:
+        by_arm.setdefault(r["arm"], {})[r["task"]] = r
+
+    base = by_arm.get(baseline, {})
+    other = by_arm.get(arm, {})
+    shared = sorted(
+        t for t in (set(base) & set(other))
+        if field in base[t] and field in other[t]
+    )
+
+    deltas = {t: other[t][field] - base[t][field] for t in shared}
+    signs = {d > 0 for d in deltas.values() if d != 0}
+
+    return {
+        "baseline": baseline,
+        "arm": arm,
+        "field": field,
+        "pairs": len(shared),
+        "deltas": deltas,
+        "total_delta": sum(deltas.values()),
+        "consistent": len(signs) <= 1 and len(deltas) > 0,
+    }
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="bench-results")
     ap.add_argument("--bob-config", default=DEFAULT_BOB_CFG)
     ap.add_argument("--lp-config", default=DEFAULT_LP_CFG)
+    ap.add_argument("--db", default=DEFAULT_DB)
+    ap.add_argument("--cwd", default=os.getcwd())
+    ap.add_argument("--leanproxy-bin", default=os.path.join(HOME, ".local", "bin", "leanproxy-mcp"))
+    ap.add_argument("--tasks", default=os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..",
+        "tests", "bench", "e2e", "fixtures", "tasks.json"))
     args = ap.parse_args(argv)
 
     if os.environ.get("LEANPROXY_AB_LIVE") != "1":
@@ -497,7 +550,50 @@ def main(argv=None) -> int:
             print(f"  - {p}", file=sys.stderr)
         return 2
 
-    print("config clean; runner lands in the next task")
+    tasks = load_tasks(args.tasks)
+    leanproxy_bin = args.leanproxy_bin
+    records = []
+
+    for arm in ARMS:
+        cfg = arm_config(arm, leanproxy_bin, bob_cfg)
+        with ConfigSwap(args.bob_config, cfg):
+            for t in tasks:
+                print(f"[{arm}] {t['id']} ...", flush=True)
+                try:
+                    task_id = run_task(t["prompt"], args.cwd, args.db)
+                except Exception as exc:  # noqa: BLE001 - a failed run is data
+                    print(f"  run failed: {exc}", file=sys.stderr)
+                    records.append({"layer": "live", "origin": "measured", "arm": arm,
+                                    "task": t["id"], "succeeded": False, "error": str(exc)})
+                    continue
+                res = read_task_result(args.db, task_id, t["expect_tool"])
+                res.update({"layer": "live", "origin": "measured", "arm": arm, "task": t["id"]})
+                records.append(res)
+                print(f"  cost={res['cost_usd']:.4f} turns={res['turns']} ok={res['succeeded']}")
+
+    os.makedirs(args.out, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out_path = os.path.join(args.out, f"e2e-live-{stamp}.json")
+    with open(out_path, "w") as fh:
+        json.dump(records, fh, indent=2)
+
+    print(f"\nwrote {out_path}\n")
+    print("Paired per-task deltas vs native (primary statistic):")
+    for arm in ("router", "lazy"):
+        for field in ("cost_usd", "turns"):
+            d = paired_deltas(records, "native", arm, field)
+            if d["pairs"] == 0:
+                continue
+            verdict = f"{d['total_delta']:+.4f}" if d["consistent"] else "no detectable effect (signs disagree)"
+            print(f"  {arm:<7} {field:<9} pairs={d['pairs']} {verdict}")
+
+    failures = [r for r in records if not r.get("succeeded")]
+    if failures:
+        print(f"\n{len(failures)} task run(s) failed — discovery failures are a real "
+              f"cost of lazy loading and are reported, not discarded:")
+        for f in failures:
+            print(f"  {f['arm']}/{f['task']}")
+
     return 0
 
 

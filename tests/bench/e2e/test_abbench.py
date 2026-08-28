@@ -498,5 +498,48 @@ class TestRunTask(unittest.TestCase):
             self.assertEqual(task_id, "new-id")
 
 
+class TestPairedDeltas(unittest.TestCase):
+    RECORDS = [
+        {"arm": "native", "task": "a", "cost_usd": 1.00, "turns": 3},
+        {"arm": "native", "task": "b", "cost_usd": 0.10, "turns": 2},
+        {"arm": "lazy",   "task": "a", "cost_usd": 0.80, "turns": 3},
+        {"arm": "lazy",   "task": "b", "cost_usd": 0.08, "turns": 2},
+    ]
+
+    def test_pairs_by_task_and_reports_consistent_sign(self):
+        out = abbench.paired_deltas(self.RECORDS, "native", "lazy", "cost_usd")
+        self.assertAlmostEqual(out["deltas"]["a"], -0.20)
+        self.assertAlmostEqual(out["deltas"]["b"], -0.02)
+        self.assertTrue(out["consistent"])
+        self.assertAlmostEqual(out["total_delta"], -0.22)
+
+    def test_reports_inconsistent_when_signs_disagree(self):
+        recs = self.RECORDS + [
+            {"arm": "native", "task": "c", "cost_usd": 0.10, "turns": 1},
+            {"arm": "lazy",   "task": "c", "cost_usd": 0.30, "turns": 3},
+        ]
+        out = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
+        self.assertFalse(out["consistent"])
+
+    def test_ignores_tasks_missing_from_one_arm(self):
+        recs = self.RECORDS + [{"arm": "native", "task": "z", "cost_usd": 5.0, "turns": 9}]
+        out = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
+        self.assertNotIn("z", out["deltas"])
+        self.assertEqual(out["pairs"], 2)
+
+    def test_ignores_a_failed_run_missing_the_field_instead_of_raising(self):
+        """A run_task failure records succeeded=False and an error instead of
+        token/cost metrics (see main). That task is present in both arms but
+        has no `cost_usd` on the failing side — treat it like an unpaired
+        point rather than raising KeyError and losing every other pair."""
+        recs = self.RECORDS + [
+            {"arm": "native", "task": "w", "cost_usd": 0.5, "turns": 4},
+            {"arm": "lazy", "task": "w", "succeeded": False, "error": "timed out"},
+        ]
+        out = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
+        self.assertNotIn("w", out["deltas"])
+        self.assertEqual(out["pairs"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
