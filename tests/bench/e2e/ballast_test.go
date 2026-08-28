@@ -193,6 +193,22 @@ func layer2BallastArgs(t *testing.T, mockBin string, tools int) (bob, lp []strin
 	script := filepath.Join(root, "scripts", "abbench.py")
 	fixture := filepath.Join(root, "tests", "bench", "e2e", "fixtures", "ballast.json")
 
+	// script and fixture are read by the python3 subprocess below, not by
+	// this test binary, so `go test`'s result cache — which keys on the
+	// files THIS process reads — has no way to see that either changed. An
+	// edit to scripts/abbench.py alone would otherwise return a stale PASS
+	// from cache, silently un-guarding the exact defect (C-1) this test
+	// exists to catch. Reading them here makes their content part of the
+	// cache key too, since go test tracks os.ReadFile calls made by the
+	// test binary itself (N-4) — verified: touching either file busts the
+	// cache on the next `go test` run with no flags.
+	if _, err := os.ReadFile(script); err != nil {
+		t.Fatalf("reading %s to make it part of the test cache key: %v", script, err)
+	}
+	if _, err := os.ReadFile(fixture); err != nil {
+		t.Fatalf("reading %s to make it part of the test cache key: %v", fixture, err)
+	}
+
 	const driver = `
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("abbench", sys.argv[1])

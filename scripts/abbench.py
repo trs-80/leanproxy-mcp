@@ -1481,6 +1481,13 @@ def main(argv=None) -> int:
     ap.add_argument("--tasks", default=DEFAULT_TASKS)
     ap.add_argument("--ballast-fixture", default=DEFAULT_BALLAST_FIXTURE,
                     help="shared ballast definition; must be the file Layer 1 embeds")
+    ap.add_argument("--allow-ballast-fixture-override", action="store_true",
+                    help="allow --ballast-fixture to point somewhere other than the "
+                         "file Layer 1's ballast.go embeds. Without this, a different "
+                         "fixture reopens review C-1 (two layers weighing ballast "
+                         "differently under the same ballast_tools x-axis label) with "
+                         "no guard to catch it — TestBallastWeightIsIdenticalAcrossLayers "
+                         "only ever compares Layer 2 against DEFAULT_BALLAST_FIXTURE")
     ap.add_argument("--ballast-points", default="0,100",
                      help="comma-separated total ballast tool counts to run live")
     ap.add_argument("--mock-bin", default="", help="path to the built mockmcp binary")
@@ -1509,6 +1516,19 @@ def main(argv=None) -> int:
         print("Refusing to run — config confounds detected:", file=sys.stderr)
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
+        return 2
+
+    if (os.path.abspath(args.ballast_fixture) != os.path.abspath(DEFAULT_BALLAST_FIXTURE)
+            and not args.allow_ballast_fixture_override):
+        print(
+            f"Refusing to run — --ballast-fixture={args.ballast_fixture!r} differs from "
+            f"the default ({DEFAULT_BALLAST_FIXTURE!r}), the file "
+            f"tests/bench/e2e/ballast.go embeds. Running Layer 2 against a different "
+            f"ballast definition than Layer 1 is exactly review C-1 (the two layers' "
+            f"ballast tools weighing different amounts under the same ballast_tools "
+            f"label), and nothing downstream would notice. Pass "
+            f"--allow-ballast-fixture-override to do this deliberately.",
+            file=sys.stderr)
         return 2
 
     ballast_fixture = load_ballast_fixture(args.ballast_fixture)

@@ -282,9 +282,9 @@ produce no verdict is a refusal with an empty bill, not a discovery made after
 the budget is gone. `--skip-preflight` bypasses this and is documented as
 spending real money on an unverified configuration.
 
-**The arms mirror Layer 1's topology exactly**, because Layer 3 joins the two
-layers on `ballast_tools` alone and multiplies one layer's turn count by the
-other's residency figure:
+**The arms mirror Layer 1's topology**, because Layer 3 joins the two layers on
+`ballast_tools` alone and multiplies one layer's turn count by the other's
+residency figure:
 
 | Arm | Proxied servers | Ballast |
 |---|---|---|
@@ -296,6 +296,22 @@ Both layers take the ballast tool description from the single fixture
 `tests/bench/e2e/fixtures/ballast.json` (Layer 1 embeds it with `//go:embed`;
 Layer 2 reads it), and `TestBallastWeightIsIdenticalAcrossLayers` fails on a
 one-byte difference between the two layers' real `tools/list` payloads.
+
+**The topology matches; the inventory behind it does not.** Layer 1's
+residency sweep (`tests/bench/e2e/residency_test.go`) builds its server specs
+from ballast alone — no real proxied server is ever dialed to produce a
+residency figure. Layer 2's live sessions carry the operator's real proxied
+servers (e.g. `codebase-memory`, `context7`) *in addition to* ballast, in
+every arm. So the joined figure multiplies a turn count measured against the
+real servers' full schemas by a residency figure that never included them.
+The gap is arm-dependent (`native` carries the real servers' full schemas in
+its live sessions; `router` hides them behind the wrapper tools; `lazy` stubs
+them), so it is not a constant offset, and it runs *against* LeanProxy — it
+understates the proxy arms' advantage, since the residency figure omits
+schema weight the proxy arms would otherwise get credit for hiding.
+`MAX_OBSERVED_MODEL_RATIO` in `abreport.py` is built to flag exactly this
+kind of understatement when it crosses a threshold; read a ratio-tagged row
+with that in mind.
 
 The proxy arms run against a generated copy of the operator's
 `leanproxy_servers.yaml` with the ballast spliced in and `adaptive_stub_after`

@@ -1742,6 +1742,82 @@ class TestInventories(unittest.TestCase):
         self.assertTrue(any("not inventoried" in n for n in notes), notes)
 
 
+class TestBallastFixtureOverrideGuard(unittest.TestCase):
+    """N-5: --ballast-fixture is an unguarded escape hatch straight back to
+    C-1 — it lets Layer 2 use a different ballast definition than the one
+    Layer 1 embeds, and TestBallastWeightIsIdenticalAcrossLayers only ever
+    checks Layer 2 against DEFAULT_BALLAST_FIXTURE, so a different path is
+    invisible to that guard. main() must refuse it unless the operator also
+    passes --allow-ballast-fixture-override."""
+
+    def _setup(self, d):
+        bob_cfg_path = os.path.join(d, "mcp.json")
+        lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+        tasks_path = os.path.join(d, "tasks.json")
+        alt_fixture_path = os.path.join(d, "alt-ballast.json")
+        with open(bob_cfg_path, "w") as fh:
+            json.dump({"mcpServers": {}}, fh)
+        with open(lp_cfg_path, "w") as fh:
+            fh.write(LP_STDIO)
+        with open(tasks_path, "w") as fh:
+            json.dump({"tasks": [{"id": "t1", "prompt": "p",
+                                  "expect_tool": "get_architecture"}]}, fh)
+        with open(alt_fixture_path, "w") as fh:
+            json.dump({"description": "x" * 10, "description_chars": 10}, fh)
+        return bob_cfg_path, lp_cfg_path, tasks_path, alt_fixture_path
+
+    def _run(self, d, extra=()):
+        import unittest.mock as mock
+        bob_cfg_path, lp_cfg_path, tasks_path, alt_fixture_path = self._setup(d)
+        with mock.patch.object(abbench, "run_task") as run_task_mock, \
+             mock.patch.object(abbench, "read_task_result",
+                               return_value={"turns": 1, "output_tokens": 1,
+                                             "input_tokens": 1, "cost_usd": 0.0,
+                                             "succeeded": True}), \
+             mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+            rc = abbench.main(["--out", os.path.join(d, "out"),
+                               "--bob-config", bob_cfg_path,
+                               "--lp-config", lp_cfg_path,
+                               "--db", os.path.join(d, "bob.db"),
+                               "--tasks", tasks_path, "--cwd", d,
+                               "--leanproxy-bin", "/usr/bin/true",
+                               "--skip-preflight", "--ballast-points", "0",
+                               "--ballast-fixture", alt_fixture_path, *extra])
+        return rc, run_task_mock
+
+    def test_a_non_default_fixture_refuses_without_the_override_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, run_task_mock = self._run(d)
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+
+    def test_the_override_flag_permits_a_non_default_fixture(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, run_task_mock = self._run(d, extra=("--allow-ballast-fixture-override",))
+            self.assertEqual(rc, 0)
+            self.assertTrue(run_task_mock.called)
+
+    def test_the_default_fixture_needs_no_override_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            import unittest.mock as mock
+            bob_cfg_path, lp_cfg_path, tasks_path, _ = self._setup(d)
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.object(abbench, "read_task_result",
+                                   return_value={"turns": 1, "output_tokens": 1,
+                                                 "input_tokens": 1, "cost_usd": 0.0,
+                                                 "succeeded": True}), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", os.path.join(d, "out"),
+                                   "--bob-config", bob_cfg_path,
+                                   "--lp-config", lp_cfg_path,
+                                   "--db", os.path.join(d, "bob.db"),
+                                   "--tasks", tasks_path, "--cwd", d,
+                                   "--leanproxy-bin", "/usr/bin/true",
+                                   "--skip-preflight", "--ballast-points", "0"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(run_task_mock.called)
+
+
 class TestDirtyRepoGuard(unittest.TestCase):
     """I-3: the sweep drives 30 unsupervised, write-capable agent sessions in
     --cwd. On a dirty tree there is no way to tell afterwards what it did."""
