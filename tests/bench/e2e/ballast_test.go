@@ -78,6 +78,37 @@ func TestWriteConfigIsLoadable(t *testing.T) {
 	}
 }
 
+// TestBallastToolIsRealisticWeight guards against the ballast schema silently
+// degenerating back into the tiny stub that made TestCaptureLazySitsBetween-
+// RouterAndNative fail: with a one-property inputSchema and a description
+// under stubDescChars (pkg/mcp/discovery.go), lazy-mode compaction has
+// nothing to strip and the "servername_" prefix alone makes lazy bigger than
+// native. live-snapshot.json (tests/bench/fixtures/live-snapshot.json) puts
+// real upstream tools (github/garmin/intervals) at 400 bytes/tool; a ballast
+// tool must land in that neighborhood for the sweep to mean anything.
+func TestBallastToolIsRealisticWeight(t *testing.T) {
+	mock := buildMockMCP(t)
+	specs := BallastSpecs(mock, 1, 1)
+
+	c, err := Dial(specs[0].Command, specs[0].Args...)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+	if err := c.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	raw, err := c.ToolsListRaw()
+	if err != nil {
+		t.Fatalf("ToolsListRaw: %v", err)
+	}
+
+	const wantMin, wantMax = 350, 450
+	if got := len(raw); got < wantMin || got > wantMax {
+		t.Fatalf("single-tool tools/list payload is %d bytes, want %d-%d (realistic per-tool weight, see live-snapshot.json)", got, wantMin, wantMax)
+	}
+}
+
 // TestWriteConfigCommandWithColonSpace is a regression test: a command path
 // containing a colon-space sequence (e.g. "C:\ tools\mockmcp") used to be
 // interpolated into the YAML as an unquoted plain scalar, which the real

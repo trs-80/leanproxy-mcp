@@ -16,6 +16,19 @@ type Spec struct {
 	Args    []string
 }
 
+// BallastToolDescription is the description given to every ballast tool.
+// Its length (not padding — a real sentence, since --lazy-tools truncates
+// prose rather than counting it) is chosen so a ballast tool's tools/list
+// entry lands near 400 bytes, matching what live-snapshot.json
+// (tests/bench/fixtures/live-snapshot.json) measures for real upstream tools:
+// github 16400B/41 tools, garmin 40000B/100, intervals 4000B/10 — all exactly
+// 400 bytes/tool. At 308 characters this description exceeds stubDescChars
+// (160, pkg/mcp/discovery.go), so --lazy-tools truncation actually has prose
+// to cut; a shorter description no-ops truncation and understates lazy mode's
+// benefit (as the original 46-char DescriptionBase did — see
+// TestBallastToolIsRealisticWeight).
+const BallastToolDescription = "Searches the configured backend for items matching the given query and returns matching records with their metadata, pagination cursor, and total count. Supports filtering by status, date range, and owner; results are sorted by relevance unless a sort field is specified explicitly in the request parameters."
+
 // BallastSpecs returns `servers` synthetic MCP servers, each advertising
 // `toolsPerServer` tools. Ballast exists to move total schema weight past the
 // ~10 real tools in the production setup, so the sweep can reach the region
@@ -26,7 +39,10 @@ func BallastSpecs(mockBin string, servers, toolsPerServer int) []Spec {
 		specs = append(specs, Spec{
 			Name:    fmt.Sprintf("ballast%d", i),
 			Command: mockBin,
-			Args:    []string{fmt.Sprintf("--tools=%d", toolsPerServer)},
+			Args: []string{
+				fmt.Sprintf("--tools=%d", toolsPerServer),
+				"--description=" + BallastToolDescription,
+			},
 		})
 	}
 	return specs
