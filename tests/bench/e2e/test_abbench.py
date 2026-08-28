@@ -1618,6 +1618,32 @@ for line in sys.stdin:
     print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
 '''
 
+# A fake MCP server whose only tool reports the HOME environment variable it
+# was started with, for N-1: proving the preflight's subprocesses see an
+# isolated HOME rather than the operator's real one.
+HOME_REPORTING_MCP_SERVER = r'''
+import json, os, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue  # a notification; nothing to answer
+    if msg["method"] == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {}}
+    elif msg["method"] == "tools/list":
+        result = {"tools": [{"name": "whoami", "description": "d"}]}
+    elif msg["method"] == "tools/call":
+        result = {"content": [{"type": "text", "text": os.environ.get("HOME", "")}]}
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                          "error": {"code": -32601, "message": "no such method"}}),
+              flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
+'''
+
 
 class TestMcpStdio(unittest.TestCase):
     """The preflight's own MCP client. Tested against a stdlib fake server so
@@ -1651,6 +1677,43 @@ class TestMcpStdio(unittest.TestCase):
         with c:
             with self.assertRaises(RuntimeError):
                 c.initialize()
+
+    def test_home_is_isolated_to_a_private_temp_dir_and_removed_on_close(self):
+        """N-1: without this, every preflight spawn of leanproxy-mcp writes
+        ballast tool caches into the operator's real ~/.config/leanproxy and
+        rewrites the live daemon's status file — on the refusal path too.
+        Mirrors tests/bench/e2e/client.go's TestDialIsolatesHomeDirectory."""
+        real_home = os.path.expanduser("~")
+        c = abbench.McpStdio(sys.executable, ["-c", HOME_REPORTING_MCP_SERVER], timeout=10)
+        with c:
+            c.initialize()
+            seen_home = c.call_tool_text("whoami", {})
+            isolated_dir = c._home_dir
+            self.assertTrue(isolated_dir, "McpStdio did not record an isolated HOME dir")
+            self.assertEqual(seen_home, isolated_dir,
+                              "subprocess did not see the isolated HOME")
+            self.assertNotEqual(os.path.realpath(isolated_dir), os.path.realpath(real_home))
+            self.assertTrue(os.path.isdir(isolated_dir))
+        self.assertFalse(os.path.exists(isolated_dir),
+                          "isolated HOME dir was not cleaned up on close")
+
+    def test_home_is_isolated_even_when_the_subprocess_fails_to_start(self):
+        """The refusal path: a server that cannot even be spawned must still
+        leave no isolated-home directory behind."""
+        c = abbench.McpStdio("/nonexistent/leanproxy-does-not-exist", [], timeout=10)
+        with self.assertRaises(Exception):
+            with c:
+                pass
+        self.assertIsNone(c._home_dir)
+
+    def test_each_instance_gets_its_own_isolated_home(self):
+        with abbench.McpStdio(sys.executable, ["-c", HOME_REPORTING_MCP_SERVER], timeout=10) as c1:
+            c1.initialize()
+            home1 = c1.call_tool_text("whoami", {})
+        with abbench.McpStdio(sys.executable, ["-c", HOME_REPORTING_MCP_SERVER], timeout=10) as c2:
+            c2.initialize()
+            home2 = c2.call_tool_text("whoami", {})
+        self.assertNotEqual(home1, home2)
 
 
 class TestInventories(unittest.TestCase):

@@ -714,6 +714,16 @@ class McpStdio:
     tools/list, tools/call. Reads run on a background thread so a server that
     starts but never answers times out instead of hanging the preflight
     forever — a preflight that can hang is a preflight operators skip.
+
+    HOME (and USERPROFILE, for Windows) are pointed at a private, per-instance
+    temp directory instead of the operator's real one, mirroring
+    tests/bench/e2e/client.go's Dial. Without this, every preflight spawn of
+    leanproxy-mcp — including on a path where the preflight goes on to REFUSE
+    the configuration — writes ballast tool caches into the operator's real
+    ~/.config/leanproxy/toolcache and rewrites the live daemon's
+    ~/.config/leanproxy/status/current.json (internal/cachefile.Dir and
+    pkg/statusfile resolve both via os.UserHomeDir, i.e. $HOME). See
+    TestPreflightIsolatesHomeDirectory.
     """
 
     def __init__(self, command: str, args: list, cwd: str = None, timeout: float = 60.0):
@@ -725,17 +735,28 @@ class McpStdio:
         self._lines = queue.Queue()
         self._stderr = []
         self._next = 1
+        self._home_dir = None
 
     def __enter__(self):
-        self.proc = subprocess.Popen(
-            [self.command] + self.args,
-            cwd=self.cwd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        self._home_dir = tempfile.mkdtemp(prefix="leanproxy-ab-home-")
+        try:
+            env = dict(os.environ)
+            env["HOME"] = self._home_dir
+            env["USERPROFILE"] = self._home_dir
+            self.proc = subprocess.Popen(
+                [self.command] + self.args,
+                cwd=self.cwd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except Exception:
+            shutil.rmtree(self._home_dir, ignore_errors=True)
+            self._home_dir = None
+            raise
         threading.Thread(target=self._pump, args=(self.proc.stdout, self._lines), daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
         return self
@@ -835,22 +856,26 @@ class McpStdio:
         )
 
     def close(self):
-        if not self.proc:
-            return
         try:
-            if self.proc.stdin:
-                self.proc.stdin.close()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
-        except Exception:  # noqa: BLE001
-            try:
-                self.proc.kill()
-            except Exception:  # noqa: BLE001
-                pass
-        self.proc = None
+            if self.proc:
+                try:
+                    if self.proc.stdin:
+                        self.proc.stdin.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    self.proc.terminate()
+                    self.proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    try:
+                        self.proc.kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self.proc = None
+        finally:
+            if self._home_dir:
+                shutil.rmtree(self._home_dir, ignore_errors=True)
+                self._home_dir = None
 
 
 # ---------------------------------------------------------------------------
