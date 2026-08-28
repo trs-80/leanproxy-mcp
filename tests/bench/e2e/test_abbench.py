@@ -192,6 +192,48 @@ class TestArmConfig(unittest.TestCase):
         self.assertNotIn("--lazy-tools", self.BASE["mcpServers"]["leanproxy"]["args"])
 
 
+class TestBallast(unittest.TestCase):
+    def test_generates_named_ballast_entries(self):
+        b = abbench.ballast_servers("/tmp/mockmcp", 2, 50)
+        self.assertEqual(len(b), 2)
+        self.assertIn("ballast0", b)
+        self.assertIn("--tools=50", b["ballast0"]["args"])
+
+    def test_zero_servers_yields_nothing(self):
+        self.assertEqual(abbench.ballast_servers("/tmp/mockmcp", 0, 50), {})
+
+    def test_arm_config_merges_ballast_into_native(self):
+        base = {"mcpServers": {"leanproxy": {"command": "/old", "args": []}}}
+        ballast = abbench.ballast_servers("/tmp/mockmcp", 2, 50)
+        cfg = abbench.arm_config("native", "/new/bin", base, ballast)
+        self.assertIn("ballast0", cfg["mcpServers"])
+        self.assertNotIn("leanproxy", cfg["mcpServers"])
+
+    def test_arm_config_without_ballast_is_unchanged(self):
+        base = {"mcpServers": {"leanproxy": {"command": "/old", "args": []}}}
+        cfg = abbench.arm_config("lazy", "/new/bin", base)
+        self.assertEqual([k for k in cfg["mcpServers"] if k.startswith("ballast")], [])
+
+    def test_arm_config_ballast_present_in_every_arm(self):
+        """Ballast attaches directly to Bob regardless of arm — it is not
+        routed through the proxy, so router and lazy must carry it too, not
+        just native."""
+        base = {"mcpServers": {"leanproxy": {"command": "/old", "args": []}}}
+        ballast = abbench.ballast_servers("/tmp/mockmcp", 2, 50)
+        for arm in ("router", "lazy"):
+            cfg = abbench.arm_config(arm, "/new/bin", base, ballast)
+            self.assertIn("ballast0", cfg["mcpServers"])
+            self.assertIn("ballast1", cfg["mcpServers"])
+            self.assertIn("leanproxy", cfg["mcpServers"])
+
+    def test_arm_config_ballast_does_not_mutate_the_ballast_dict(self):
+        base = {"mcpServers": {"leanproxy": {"command": "/old", "args": []}}}
+        ballast = abbench.ballast_servers("/tmp/mockmcp", 1, 50)
+        cfg = abbench.arm_config("native", "/new/bin", base, ballast)
+        cfg["mcpServers"]["ballast0"]["args"].append("--mutated")
+        self.assertNotIn("--mutated", ballast["ballast0"]["args"])
+
+
 class TestConfigSwap(unittest.TestCase):
     def _write(self, path, obj):
         with open(path, "w") as fh:
@@ -573,6 +615,24 @@ class TestPairedDeltas(unittest.TestCase):
         out_inconsistent = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
         self.assertEqual(out_inconsistent["verdict"], "inconsistent")
 
+    def test_records_from_different_ballast_levels_do_not_pair(self):
+        """main() tags `task` as f"{id}@{actual_ballast}" so a sweep across
+        multiple ballast points never pairs a k=0 measurement against a
+        k=100 measurement for the "same" underlying task id — they are
+        different points on the sweep, not repeats of one measurement."""
+        recs = [
+            {"arm": "native", "task": "a@0", "ballast_tools": 0, "cost_usd": 1.00},
+            {"arm": "lazy", "task": "a@0", "ballast_tools": 0, "cost_usd": 0.80},
+            {"arm": "native", "task": "a@100", "ballast_tools": 100, "cost_usd": 1.00},
+            {"arm": "lazy", "task": "a@100", "ballast_tools": 100, "cost_usd": 0.95},
+        ]
+        out = abbench.paired_deltas(recs, "native", "lazy", "cost_usd")
+        self.assertEqual(out["pairs"], 2)
+        self.assertIn("a@0", out["deltas"])
+        self.assertIn("a@100", out["deltas"])
+        self.assertAlmostEqual(out["deltas"]["a@0"], -0.20)
+        self.assertAlmostEqual(out["deltas"]["a@100"], -0.05)
+
 
 class TestMainIncrementalPersistence(unittest.TestCase):
     """main() must persist each record to disk as it's produced, not only
@@ -631,7 +691,10 @@ class TestMainIncrementalPersistence(unittest.TestCase):
             with open(os.path.join(out_dir, out_files[0])) as fh:
                 persisted = json.load(fh)
             self.assertEqual(len(persisted), 1)
-            self.assertEqual(persisted[0]["task"], "t1")
+            # task is tagged with the (actual) ballast level; the interrupt
+            # fires during the k=0 sweep point, before k=100 is ever reached.
+            self.assertEqual(persisted[0]["task"], "t1@0")
+            self.assertEqual(persisted[0]["ballast_tools"], 0)
             self.assertEqual(persisted[0]["arm"], "native")
 
             # ConfigSwap must still have restored the original config.
@@ -671,9 +734,14 @@ class TestMainIncrementalPersistence(unittest.TestCase):
             with mock.patch.object(abbench, "run_task", side_effect=fake_run_task), \
                  mock.patch.object(abbench, "read_task_result", side_effect=fake_read_task_result), \
                  mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                # Scoped to the k=0 ballast point only: this test is about the
+                # incremental-persistence mechanism, not the ballast sweep
+                # dimension (covered separately in TestBallastSweep), and a
+                # non-zero point would require a real --mock-bin.
                 rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
                                     "--lp-config", lp_cfg_path, "--db", db_path,
-                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true"])
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "0"])
 
             self.assertEqual(rc, 0)
             # one output file for the whole sweep — the same path is
@@ -686,6 +754,127 @@ class TestMainIncrementalPersistence(unittest.TestCase):
             for rec in persisted:
                 self.assertFalse(rec["succeeded"])
                 self.assertIn("error", rec)
+                self.assertEqual(rec["task"], "t1@0")
+                self.assertEqual(rec["ballast_tools"], 0)
+
+
+class TestBallastSweep(unittest.TestCase):
+    """main()'s ballast dimension: the mock-bin gate, and per-point tagging
+    with the ACTUAL (not nominal) ballast tool count."""
+
+    def _setup(self, d, task_ids):
+        bob_cfg_path = os.path.join(d, "mcp.json")
+        lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+        out_dir = os.path.join(d, "out")
+        tasks_path = os.path.join(d, "tasks.json")
+        db_path = os.path.join(d, "bob.db")
+
+        with open(bob_cfg_path, "w") as fh:
+            json.dump({"mcpServers": {}}, fh)
+        with open(lp_cfg_path, "w") as fh:
+            fh.write("servers:\n  - name: codebase-memory\n    enabled: true\n")
+        with open(tasks_path, "w") as fh:
+            json.dump({"tasks": [
+                {"id": tid, "prompt": tid, "expect_tool": "get_architecture"}
+                for tid in task_ids
+            ]}, fh)
+        return bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path
+
+    def test_nonzero_ballast_point_without_mock_bin_refuses(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path = self._setup(d, ["t1"])
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "100"])
+
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+            # never entered ConfigSwap for this point — the real config
+            # must be untouched, not left mid-swap.
+            with open(bob_cfg_path) as fh:
+                self.assertEqual(json.load(fh), {"mcpServers": {}})
+
+    def test_sweep_tags_records_with_actual_not_nominal_ballast_count(self):
+        """101 // 2 == 50, so the actual total is 100, not the nominal 101 —
+        the record must carry the actual count, same lesson Layer 1 already
+        learned about integer division."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path = self._setup(d, ["t1"])
+            calls = {"n": 0}
+
+            def fake_run_task(prompt, cwd, db, timeout=900):
+                calls["n"] += 1
+                return f"task-{calls['n']}"
+
+            def fake_read_task_result(db, task_id, expect_tool):
+                return {"task_id": task_id, "input_tokens": 1, "output_tokens": 1,
+                        "cache_read": 0, "cache_write": 0, "cost_usd": 0.1,
+                        "context_tokens": 10, "turns": 2, "succeeded": True}
+
+            with mock.patch.object(abbench, "run_task", side_effect=fake_run_task), \
+                 mock.patch.object(abbench, "read_task_result", side_effect=fake_read_task_result), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "0,101", "--mock-bin", "/tmp/mockmcp"])
+
+            self.assertEqual(rc, 0)
+            out_files = os.listdir(out_dir)
+            with open(os.path.join(out_dir, out_files[0])) as fh:
+                persisted = json.load(fh)
+
+            # one task x three arms x two ballast points == 6 records
+            self.assertEqual(len(persisted), 6)
+            tasks_seen = {r["task"] for r in persisted}
+            self.assertEqual(tasks_seen, {"t1@0", "t1@100"})
+            ballast_seen = {r["ballast_tools"] for r in persisted}
+            self.assertEqual(ballast_seen, {0, 100})
+
+    def test_records_at_different_ballast_points_do_not_pair(self):
+        """End-to-end version of the paired_deltas unit test: a live sweep
+        across k=0 and k=100 must not let paired_deltas compare a k=0
+        measurement against a k=100 one for the "same" task id."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path = self._setup(d, ["t1"])
+
+            costs = iter([0.10, 0.08, 0.06, 0.50, 0.48, 0.46])  # native,router,lazy x k=0,k=100
+
+            def fake_run_task(prompt, cwd, db, timeout=900):
+                return "task-x"
+
+            def fake_read_task_result(db, task_id, expect_tool):
+                return {"task_id": task_id, "input_tokens": 1, "output_tokens": 1,
+                        "cache_read": 0, "cache_write": 0, "cost_usd": next(costs),
+                        "context_tokens": 10, "turns": 2, "succeeded": True}
+
+            with mock.patch.object(abbench, "run_task", side_effect=fake_run_task), \
+                 mock.patch.object(abbench, "read_task_result", side_effect=fake_read_task_result), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "0,100", "--mock-bin", "/tmp/mockmcp"])
+            self.assertEqual(rc, 0)
+
+            out_files = os.listdir(out_dir)
+            with open(os.path.join(out_dir, out_files[0])) as fh:
+                persisted = json.load(fh)
+
+            d_lazy = abbench.paired_deltas(persisted, "native", "lazy", "cost_usd")
+            self.assertEqual(d_lazy["pairs"], 2)
+            self.assertIn("t1@0", d_lazy["deltas"])
+            self.assertIn("t1@100", d_lazy["deltas"])
 
 
 if __name__ == "__main__":

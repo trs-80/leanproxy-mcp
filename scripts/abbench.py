@@ -210,13 +210,37 @@ def detect_confound(bob_cfg: dict, lp_cfg_text: str) -> list:
 # ---------------------------------------------------------------------------
 
 
-def arm_config(arm: str, leanproxy_bin: str, base: dict) -> dict:
-    """Return a Bob mcp.json for the given arm, leaving `base` untouched."""
+def ballast_servers(mock_bin: str, servers: int, tools_per: int) -> dict:
+    """Bob mcpServers entries for synthetic ballast.
+
+    Ballast exists to push total schema weight past the ~10 real tools so the
+    live layer can be measured in the same region the residency sweep covers.
+    """
+    return {
+        f"ballast{i}": {
+            "command": mock_bin,
+            "args": [f"--tools={tools_per}"],
+            "disabled": False,
+            "enabled": True,
+        }
+        for i in range(servers)
+    }
+
+
+def arm_config(arm: str, leanproxy_bin: str, base: dict, ballast: dict = None) -> dict:
+    """Return a Bob mcp.json for the given arm, leaving `base` untouched.
+
+    Ballast is attached directly to Bob in every arm. It is deliberately not
+    routed through the proxy: its job is to add schema weight the model must
+    carry, which is the same job in all three arms.
+    """
     if arm not in ARMS:
         raise ValueError(f"unknown arm: {arm}")
 
     cfg = copy.deepcopy(base)
     servers = cfg.setdefault("mcpServers", {})
+    if ballast:
+        servers.update(copy.deepcopy(ballast))
 
     if arm == "native":
         servers.pop("leanproxy", None)
@@ -579,6 +603,9 @@ def main(argv=None) -> int:
     ap.add_argument("--tasks", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..",
         "tests", "bench", "e2e", "fixtures", "tasks.json"))
+    ap.add_argument("--ballast-points", default="0,100",
+                     help="comma-separated total ballast tool counts to run live")
+    ap.add_argument("--mock-bin", default="", help="path to the built mockmcp binary")
     args = ap.parse_args(argv)
 
     if os.environ.get("LEANPROXY_AB_LIVE") != "1":
@@ -605,38 +632,52 @@ def main(argv=None) -> int:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_path = os.path.join(args.out, f"e2e-live-{stamp}.json")
 
-    for arm in ARMS:
-        cfg = arm_config(arm, leanproxy_bin, bob_cfg)
-        with ConfigSwap(args.bob_config, cfg):
-            for t in tasks:
-                print(f"[{arm}] {t['id']} ...", flush=True)
-                try:
-                    task_id = run_task(t["prompt"], args.cwd, args.db)
-                except Exception as exc:  # noqa: BLE001 - a failed run is data
-                    print(f"  run failed: {exc}", file=sys.stderr)
-                    records.append({"layer": "live", "origin": "measured", "arm": arm,
-                                    "task": t["id"], "succeeded": False, "error": str(exc)})
-                    _persist_records(out_path, records)
-                    continue
+    points = [int(x) for x in args.ballast_points.split(",") if x.strip()]
+    for tools in points:
+        servers = 2 if tools > 0 else 0
+        per = tools // servers if servers else 0
+        actual = servers * per
+        if servers and not args.mock_bin:
+            print("--mock-bin is required for non-zero ballast points", file=sys.stderr)
+            return 2
+        ballast = ballast_servers(args.mock_bin, servers, per)
 
-                try:
-                    res = read_task_result(args.db, task_id, t["expect_tool"])
-                except Exception as exc:  # noqa: BLE001 - fail-closed means never
-                    # recording a WRONG measurement, not discarding a correct
-                    # one already paid for; a malformed row degrades to a
-                    # recorded failure for this one task, same as run_task's
-                    # own except above, rather than crashing the whole sweep.
-                    print(f"  read_task_result failed: {exc}", file=sys.stderr)
-                    records.append({"layer": "live", "origin": "measured", "arm": arm,
-                                    "task": t["id"], "task_id": task_id,
-                                    "succeeded": False, "error": str(exc)})
-                    _persist_records(out_path, records)
-                    continue
+        for arm in ARMS:
+            cfg = arm_config(arm, leanproxy_bin, bob_cfg, ballast)
+            with ConfigSwap(args.bob_config, cfg):
+                for t in tasks:
+                    task_key = f"{t['id']}@{actual}"
+                    print(f"[{arm}] {task_key} ...", flush=True)
+                    try:
+                        task_id = run_task(t["prompt"], args.cwd, args.db)
+                    except Exception as exc:  # noqa: BLE001 - a failed run is data
+                        print(f"  run failed: {exc}", file=sys.stderr)
+                        records.append({"layer": "live", "origin": "measured", "arm": arm,
+                                        "task": task_key, "ballast_tools": actual,
+                                        "succeeded": False, "error": str(exc)})
+                        _persist_records(out_path, records)
+                        continue
 
-                res.update({"layer": "live", "origin": "measured", "arm": arm, "task": t["id"]})
-                records.append(res)
-                _persist_records(out_path, records)
-                print(f"  cost={res['cost_usd']:.4f} turns={res['turns']} ok={res['succeeded']}")
+                    try:
+                        res = read_task_result(args.db, task_id, t["expect_tool"])
+                    except Exception as exc:  # noqa: BLE001 - fail-closed means never
+                        # recording a WRONG measurement, not discarding a correct
+                        # one already paid for; a malformed row degrades to a
+                        # recorded failure for this one task, same as run_task's
+                        # own except above, rather than crashing the whole sweep.
+                        print(f"  read_task_result failed: {exc}", file=sys.stderr)
+                        records.append({"layer": "live", "origin": "measured", "arm": arm,
+                                        "task": task_key, "ballast_tools": actual,
+                                        "task_id": task_id,
+                                        "succeeded": False, "error": str(exc)})
+                        _persist_records(out_path, records)
+                        continue
+
+                    res.update({"layer": "live", "origin": "measured", "arm": arm,
+                                "task": task_key, "ballast_tools": actual})
+                    records.append(res)
+                    _persist_records(out_path, records)
+                    print(f"  cost={res['cost_usd']:.4f} turns={res['turns']} ok={res['succeeded']}")
 
     print(f"\nwrote {out_path}\n")
     print("Paired per-task deltas vs native (primary statistic):")
