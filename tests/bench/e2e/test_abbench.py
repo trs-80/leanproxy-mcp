@@ -788,6 +788,18 @@ class TestBallastShape(unittest.TestCase):
         with self.assertRaises(ValueError):
             abbench._ballast_shape(101)
 
+    def test_negative_point_raises_even_when_internally_divisible(self):
+        """Round-2 regression: `tools=-2` floor-divides "evenly" (servers=2,
+        per=-1, actual=-2 == tools), so the divisibility check alone would
+        wave it through. Negative tool counts are rejected outright,
+        independent of divisibility."""
+        with self.assertRaises(ValueError):
+            abbench._ballast_shape(-2)
+
+    def test_odd_negative_point_also_raises(self):
+        with self.assertRaises(ValueError):
+            abbench._ballast_shape(-1)
+
 
 class TestBallastSweep(unittest.TestCase):
     """main()'s ballast dimension: the mock-bin gate (validated once, before
@@ -904,6 +916,52 @@ class TestBallastSweep(unittest.TestCase):
                                   "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
                                   "--ballast-points", "0,1", "--mock-bin", mock_bin])
 
+            run_task_mock.assert_not_called()
+            with open(bob_cfg_path) as fh:
+                self.assertEqual(json.load(fh), {"mcpServers": {}})
+
+    def test_negative_ballast_point_refuses_before_any_run(self):
+        """Round-2 regression: `--ballast-points "-2"` used to evade both
+        gates — `_ballast_shape`'s divisibility check passes (floor division
+        of an even negative is internally consistent) and the old `t > 0`
+        mock-bin gate doesn't see a negative as "non-zero" either — and ran
+        all three arms for real with a ballast server launched via
+        `command: ""`. A negative point must refuse immediately, without
+        even needing --mock-bin to be given."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, _ = self._setup(d, ["t1"])
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "-2"])
+
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+            with open(bob_cfg_path) as fh:
+                self.assertEqual(json.load(fh), {"mcpServers": {}})
+
+    def test_mixed_list_with_a_negative_point_refuses_the_whole_sweep(self):
+        """A valid point earlier in the list must not run before a later
+        negative point is discovered — the whole list is validated upfront,
+        same as C1's non-divisible-point case."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path, lp_cfg_path, out_dir, tasks_path, db_path, mock_bin = self._setup(d, ["t1"])
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                    "--lp-config", lp_cfg_path, "--db", db_path,
+                                    "--tasks", tasks_path, "--leanproxy-bin", "/usr/bin/true",
+                                    "--ballast-points", "100,-2", "--mock-bin", mock_bin])
+
+            self.assertEqual(rc, 2)
             run_task_mock.assert_not_called()
             with open(bob_cfg_path) as fh:
                 self.assertEqual(json.load(fh), {"mcpServers": {}})

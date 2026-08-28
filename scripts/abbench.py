@@ -615,7 +615,16 @@ def _ballast_shape(tools: int) -> tuple:
     overwrite the other's under the shared key. Nominal and actual counts
     must never diverge, not merely "usually agree" (Layer 1 already learned
     this the hard way for residency).
+
+    A negative `tools` is rejected here too, not only by `main`'s upfront
+    check: Python's floor division can make a negative point look internally
+    consistent (`tools=-2` gives `servers=2, per=-1, actual=-2 == tools`,
+    so the divisibility check alone would wave it through), and this
+    function's own contract — "a live tool count" — has no legitimate
+    negative value regardless of who calls it.
     """
+    if tools < 0:
+        raise ValueError(f"ballast point {tools} is negative — not a valid tool count")
     if tools == 0:
         return 0, 0, 0
     servers = BALLAST_SERVERS_PER_POINT
@@ -673,11 +682,25 @@ def main(argv=None) -> int:
 
     points = [int(x) for x in args.ballast_points.split(",") if x.strip()]
 
+    # Reject negatives immediately, before any other validation: a list of
+    # live tool counts has no legitimate negative value. Without this,
+    # `_ballast_shape` would accept a negative point whose floor division
+    # happens to come out even (e.g. tools=-2: servers=2, per=-1,
+    # actual=-2 == tools, so the divisibility check never fires), and the
+    # mock-bin gate below (`t != 0`, not `t > 0`) would otherwise be the only
+    # thing standing between a negative point and a live run with a
+    # synthetic ballast server launched via `command: ""`.
+    negatives = [t for t in points if t < 0]
+    if negatives:
+        print(f"--ballast-points must not contain negative values: {negatives}", file=sys.stderr)
+        return 2
+
     # Validate the WHOLE sweep before running any of it: a gate that only
     # fires when a later point is reached still lets every earlier point run
     # for real first, spending money on live model calls before the sweep is
-    # known to be well-formed.
-    if any(t > 0 for t in points) and not args.mock_bin:
+    # known to be well-formed. `t != 0`, not `t > 0`, so this can't silently
+    # disagree with `_ballast_shape` about what counts as a non-zero point.
+    if any(t != 0 for t in points) and not args.mock_bin:
         print("--mock-bin is required for non-zero ballast points", file=sys.stderr)
         return 2
     if args.mock_bin and not (os.path.isfile(args.mock_bin) and os.access(args.mock_bin, os.X_OK)):
