@@ -282,6 +282,30 @@ produce no verdict is a refusal with an empty bill, not a discovery made after
 the budget is gone. `--skip-preflight` bypasses this and is documented as
 spending real money on an unverified configuration.
 
+**Layer 2 records what it measured against, and refuses zeros.** Three rules
+exist so a paid sweep cannot quietly produce numbers that describe something
+other than the run:
+
+- `make bench-e2e-live` builds the proxy from source into `.bench-bin/` and
+  passes it as `--leanproxy-bin`, matching Layer 1, which builds from source
+  into a temp dir. Layer 3 joins the layers on `ballast_tools` alone, so a
+  live sweep run against a stale `~/.local/bin` build would be multiplied by
+  a working-tree residency figure with nothing to catch it. Every live record
+  carries `leanproxy_bin` and `leanproxy_sha256`, so the join stays auditable
+  even when `abbench.py` is invoked directly with a different binary. It is
+  deliberately not `dist/`: that is the path a running Bob session launches.
+- Bob writes `tasks.costs` asynchronously, and it is populated on only ~270 of
+  351 real tasks. A run whose costs never appear is recorded as a **failure
+  with an error**, never as a $0 run with zero tokens; a field missing from an
+  otherwise populated costs object is **omitted** from the record rather than
+  defaulted to 0, so `paired_deltas` drops that pair instead of averaging in a
+  zero.
+- A run that completed without reaching the expected tool is excluded from
+  abbench's own paired summary, matching `abreport.py`. It carries full cost
+  and turn fields — a model that gives up early posts a low turn count and a
+  small bill — so including it would make a failing arm look cheapest. Every
+  verdict line prints the success rate behind it.
+
 **The arms mirror Layer 1's topology**, because Layer 3 joins the two layers on
 `ballast_tools` alone and multiplies one layer's turn count by the other's
 residency figure:

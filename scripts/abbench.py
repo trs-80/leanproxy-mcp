@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import queue
@@ -1291,7 +1292,71 @@ def _reached_expected_tool(name: str, arguments: dict, expect_tool: str) -> bool
     return False
 
 
-def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
+# Bob writes `tasks.costs` asynchronously, after the row itself exists, so
+# a read taken the moment `run_task` returns can legitimately find it empty.
+COSTS_TIMEOUT_SECONDS = 60.0
+_COSTS_POLL_INTERVAL = 0.25
+
+# (record key, Bob's costs key). A key absent from a populated costs object
+# is OMITTED from the record rather than defaulted to 0 — `paired_deltas`
+# already drops a pair whose record lacks the field, and abreport's
+# `_is_scored` already treats a record without `output_tokens` as unscored.
+# A 0 would instead be averaged in as a real measurement.
+_COSTS_FIELDS = (
+    ("input_tokens", "input"),
+    ("output_tokens", "output"),
+    ("cache_read", "cacheRead"),
+    ("cache_write", "cacheWrite"),
+    ("cost_usd", "cost"),
+    ("context_tokens", "contextTokens"),
+)
+
+
+def _read_costs(db_path: str, task_id: str, timeout: float) -> dict:
+    """Bob's `costs` object for one task, waiting for it to be written.
+
+    Raises rather than returning `{}`. An unpopulated costs column means "no
+    measurement exists", and the caller's `.get(field, 0)` would turn that
+    into a measured $0 run with 0 input tokens — which then enters
+    `paired_deltas` at face value and drags abreport's observed-token means.
+    The spec's own audit found costs populated on only 270 of 351 real
+    tasks, so this is the common case, not an exotic one. Raising routes it
+    to `main`'s existing handler, which records the run as a failure with an
+    error and moves on.
+    """
+    deadline = time.time() + timeout
+    while True:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "select costs from tasks where id = ?", (task_id,)).fetchone()
+        finally:
+            conn.close()
+
+        raw = row[0] if row else None
+        if raw:
+            try:
+                costs = json.loads(raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"task {task_id!r} costs is not valid JSON: {raw[:200]!r}"
+                ) from exc
+            if isinstance(costs, dict) and costs:
+                return costs
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"task {task_id!r} has no costs after {timeout:g}s — Bob never "
+                f"populated tasks.costs for this run, so it has no measured "
+                f"tokens or cost. Recording it as a failure rather than as a "
+                f"$0 run with zero tokens."
+            )
+        time.sleep(min(_COSTS_POLL_INTERVAL, remaining))
+
+
+def read_task_result(db_path: str, task_id: str, expect_tool: str,
+                     costs_timeout: float = None) -> dict:
     """Read ground-truth token counts, turn count, and success for one task.
 
     Turn count is the number of assistant messages: each one is a model call
@@ -1301,12 +1366,15 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     `succeeded` means "the model reached for the right tool" (see
     `_reached_expected_tool`), not "the task completed correctly": a tool
     call's own `toolUsage.signature.isError` is not consulted.
+
+    Raises if Bob never wrote this task's costs (see `_read_costs`).
     """
+    if costs_timeout is None:
+        costs_timeout = COSTS_TIMEOUT_SECONDS
+    costs = _read_costs(db_path, task_id, costs_timeout)
+
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        row = conn.execute("select costs from tasks where id = ?", (task_id,)).fetchone()
-        costs = json.loads(row[0]) if row and row[0] else {}
-
         turns = conn.execute(
             "select count(*) from messages where task_id = ? and role = 'assistant'",
             (task_id,),
@@ -1322,17 +1390,11 @@ def read_task_result(db_path: str, task_id: str, expect_tool: str) -> dict:
     calls = [_tool_call_signature(r[0]) for r in tool_rows if r[0]]
     succeeded = any(_reached_expected_tool(n, a, expect_tool) for n, a in calls)
 
-    return {
-        "task_id": task_id,
-        "input_tokens": costs.get("input", 0),
-        "output_tokens": costs.get("output", 0),
-        "cache_read": costs.get("cacheRead", 0),
-        "cache_write": costs.get("cacheWrite", 0),
-        "cost_usd": costs.get("cost", 0.0),
-        "context_tokens": costs.get("contextTokens", 0),
-        "turns": turns,
-        "succeeded": succeeded,
-    }
+    res = {"task_id": task_id, "turns": turns, "succeeded": succeeded}
+    for key, costs_key in _COSTS_FIELDS:
+        if costs_key in costs:
+            res[key] = costs[costs_key]
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -1408,6 +1470,128 @@ def paired_deltas(records: list, baseline: str, arm: str, field: str) -> dict:
         "consistent": consistent,
         "verdict": verdict,
     }
+
+
+def _is_scored(r: dict) -> bool:
+    """Did this run get far enough to produce turn/output metrics?
+
+    False for a run that crashed before scoring: `main`'s run_task and
+    read_task_result handlers persist `succeeded: False` and an `error`, but
+    no `turns`/`output_tokens`.
+    """
+    return "turns" in r and "output_tokens" in r
+
+
+def _is_successful(r: dict) -> bool:
+    """Did this run produce metrics AND reach the expected tool?
+
+    Both halves matter, and conflating them is what this function exists to
+    stop. A run that CRASHED carries no metrics, so it drops out of any
+    average by itself. A run that COMPLETED but never found the expected
+    tool carries full cost and turn fields, and averaging it in lets a
+    badly-failing arm look cheapest: a model that gives up early posts a low
+    turn count and a small bill. abreport excludes exactly this class
+    (bc3025f); abbench's own summary now agrees with it rather than printing
+    a note claiming an exclusion it never performed.
+
+    An ABSENT `succeeded` key counts as success, matching abreport's
+    `_is_successful`: real `read_task_result` output always carries the key
+    explicitly, so absence only arises in minimal fixtures.
+    """
+    return _is_scored(r) and r.get("succeeded", True) is True
+
+
+def _success_rate(records: list, arm: str, level) -> float:
+    at = [r for r in records if r["arm"] == arm and r["ballast_tools"] == level]
+    if not at:
+        return None
+    return sum(1 for r in at if _is_successful(r)) / len(at)
+
+
+def paired_summary_lines(records: list) -> list:
+    """The per-level paired-delta summary, as lines.
+
+    Only successful, scored runs reach `paired_deltas` (see
+    `_is_successful`), and every verdict carries the success rate that
+    exclusion implies — a `+0.0031` computed from two of five runs is a
+    different claim from the same number computed from five of five, and the
+    reader should not have to cross-reference the failure list below to tell
+    them apart.
+    """
+    lines = ["Paired per-task deltas vs native (primary statistic), per ballast level:"]
+    levels = sorted({r["ballast_tools"] for r in records})
+    for level in levels:
+        at_level = [r for r in records if r["ballast_tools"] == level]
+        usable = [r for r in at_level if _is_successful(r)]
+        for arm in PROXY_ARMS:
+            for field in ("cost_usd", "turns"):
+                d = paired_deltas(usable, "native", arm, field)
+                if d["verdict"] == "no_pairs":
+                    continue
+                if d["verdict"] == "insufficient_pairs":
+                    verdict = f"insufficient pairs (n={d['pairs']}) — no finding"
+                elif d["verdict"] == "consistent":
+                    verdict = f"{d['total_delta']:+.4f}"
+                else:
+                    verdict = "no detectable effect (signs disagree)"
+
+                rates = []
+                for name in ("native", arm):
+                    rate = _success_rate(at_level, name, level)
+                    if rate is not None:
+                        rates.append(f"{name} {rate:.0%} ok")
+                suffix = f"  [{', '.join(rates)}]" if rates else ""
+                lines.append(f"  ballast={level:<4} {arm:<7} {field:<9} "
+                             f"pairs={d['pairs']} {verdict}{suffix}")
+    return lines
+
+
+def failure_note_lines(records: list) -> list:
+    """The excluded-runs note.
+
+    The wording is load-bearing. The previous version justified the
+    exclusion with "a failed run has no cost/turn metrics" — true only of a
+    run that crashed. A run that completed without finding the expected tool
+    has every metric, and the old summary averaged it straight in while this
+    note told the reader it had not.
+    """
+    failures = [r for r in records if not _is_successful(r)]
+    if not failures:
+        return []
+    lines = [
+        f"\n{len(failures)} run(s) excluded from the comparison above — discovery "
+        f"failures are a real cost of lazy loading and are reported, not "
+        f"discarded. Two kinds are excluded: a run that crashed before scoring "
+        f"(no metrics to average), and a run that completed without reaching the "
+        f"expected tool (full metrics, but a model that gives up early posts a "
+        f"low turn count and a small bill, which would make a failing arm look "
+        f"cheapest). Each verdict above carries the success rate this implies:",
+    ]
+    for f in failures:
+        reason = "crashed" if not _is_scored(f) else "never reached the expected tool"
+        lines.append(f"  {f['arm']}/{f['task']} — {reason}")
+    return lines
+
+
+def binary_provenance(path: str) -> dict:
+    """Identify the leanproxy binary a live run was measured against.
+
+    Layer 3 joins Layer 1 (residency, built from source) to Layer 2 (live,
+    whatever `--leanproxy-bin` points at) on `ballast_tools` alone, then
+    multiplies one layer's turn count by the other's residency figure.
+    Without this, a working-tree residency figure could be silently
+    multiplied by turn counts from a different proxy build — the same
+    cross-layer divergence class as reviews C-1/C-2. The hash goes into
+    every live record so the join is auditable after the fact.
+    """
+    p = os.path.abspath(os.path.expanduser(path))
+    if not (os.path.isfile(p) and os.access(p, os.X_OK)):
+        raise ValueError(f"{p!r} is not an executable file")
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return {"leanproxy_bin": p, "leanproxy_sha256": h.hexdigest()}
 
 
 def _persist_records(path: str, records: list) -> None:
@@ -1544,6 +1728,16 @@ def main(argv=None) -> int:
 
     tasks = load_tasks(args.tasks)
     leanproxy_bin = args.leanproxy_bin
+
+    # Before anything is spent: a binary that isn't there can't be measured,
+    # and a binary that IS there gets hashed into every record so Layer 3's
+    # join can be audited for cross-layer build divergence later.
+    try:
+        provenance = binary_provenance(leanproxy_bin)
+    except ValueError as exc:
+        print(f"Refusing to run — --leanproxy-bin {exc}", file=sys.stderr)
+        return 2
+
     records = []
 
     points = [int(x) for x in args.ballast_points.split(",") if x.strip()]
@@ -1594,7 +1788,9 @@ def main(argv=None) -> int:
     # is removed on the way out rather than beside the results.
     workdir = tempfile.mkdtemp(prefix="abbench-")
     try:
-        note = {"tool_filter_asymmetry": filtered} if filtered else {}
+        note = dict(provenance)
+        if filtered:
+            note["tool_filter_asymmetry"] = filtered
 
         for tools, (servers, per, actual) in shapes:
             ballast_bob = (
@@ -1674,39 +1870,20 @@ def main(argv=None) -> int:
                                     "task": task_key, "ballast_tools": actual, **note})
                         records.append(res)
                         _persist_records(out_path, records)
-                        print(f"  cost={res['cost_usd']:.4f} turns={res['turns']} "
+                        cost = res.get("cost_usd")
+                        cost_str = f"{cost:.4f}" if cost is not None else "n/a"
+                        print(f"  cost={cost_str} turns={res['turns']} "
                               f"ok={res['succeeded']}")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    print(f"\nwrote {out_path}\n")
-    print("Paired per-task deltas vs native (primary statistic), per ballast level:")
-    levels = sorted({r["ballast_tools"] for r in records})
-    for level in levels:
-        at_level = [r for r in records if r["ballast_tools"] == level]
-        for arm in PROXY_ARMS:
-            for field in ("cost_usd", "turns"):
-                d = paired_deltas(at_level, "native", arm, field)
-                if d["verdict"] == "no_pairs":
-                    continue
-                if d["verdict"] == "insufficient_pairs":
-                    verdict = f"insufficient pairs (n={d['pairs']}) — no finding"
-                elif d["verdict"] == "consistent":
-                    verdict = f"{d['total_delta']:+.4f}"
-                else:
-                    verdict = "no detectable effect (signs disagree)"
-                print(f"  ballast={level:<4} {arm:<7} {field:<9} "
-                      f"pairs={d['pairs']} {verdict}")
-
-    failures = [r for r in records if not r.get("succeeded")]
-    if failures:
-        print(f"\n{len(failures)} task run(s) failed — discovery failures are a real "
-              f"cost of lazy loading and are reported, not discarded. A failed run "
-              f"has no cost/turn metrics, so it is EXCLUDED from the paired-delta "
-              f"comparison above rather than silently averaged in — that exclusion "
-              f"is itself part of the finding:")
-        for f in failures:
-            print(f"  {f['arm']}/{f['task']}")
+    print(f"\nwrote {out_path}")
+    print(f"measured against {provenance['leanproxy_bin']} "
+          f"(sha256 {provenance['leanproxy_sha256'][:12]})\n")
+    for line in paired_summary_lines(records):
+        print(line)
+    for line in failure_note_lines(records):
+        print(line)
 
     dirty_after = git_status(args.cwd)
     if dirty_after and dirty_after != (dirty_before or ""):

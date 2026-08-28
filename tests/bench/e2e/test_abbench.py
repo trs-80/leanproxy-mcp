@@ -6,6 +6,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -1916,6 +1917,311 @@ class TestDisabledEntryNameCollision(unittest.TestCase):
             rc, run_task_mock = self._run(d)
             self.assertEqual(rc, 2)
             run_task_mock.assert_not_called()
+
+
+class TestCostsAreNeverInventedAsZero(unittest.TestCase):
+    """Review Important #1: Bob writes `tasks.costs` asynchronously, and the
+    spec's own audit found it populated on only 270 of 351 real tasks. The
+    old `costs = json.loads(row[0]) if row and row[0] else {}` followed by
+    `.get(field, 0)` turned "no measurement exists" into "a measured $0 run
+    with 0 input tokens", which then entered paired_deltas at face value and
+    dragged abreport's observed-token means. This is the same silent-zero
+    class the Go side fixed with pointer-typed Succeeded/CostUSD."""
+
+    def _db(self, d, costs="__default__"):
+        import sqlite3
+        p = os.path.join(d, "bob.db")
+        conn = sqlite3.connect(p)
+        conn.execute("create table tasks (id text, costs text)")
+        conn.execute(
+            "create table messages (task_id text, role text, data text, created_at int)")
+        if costs == "__default__":
+            costs = json.dumps({"input": 1000, "output": 50, "cacheRead": 800,
+                                "cacheWrite": 200, "cost": 0.21,
+                                "contextTokens": 900})
+        if costs is not None:
+            conn.execute("insert into tasks values (?,?)", ("t1", costs))
+        rows = [("tool", _tool_message("codebase-memory_get_architecture")),
+                ("assistant", json.dumps({"role": "assistant"})),
+                ("assistant", json.dumps({"role": "assistant"}))]
+        for i, (role, data) in enumerate(rows):
+            conn.execute("insert into messages values (?,?,?,?)", ("t1", role, data, i))
+        conn.commit()
+        conn.close()
+        return p
+
+    def test_raises_when_the_task_row_never_carries_costs(self):
+        """A row whose costs column is NULL must raise, so main's existing
+        handler records it as a failure with an error, rather than returning
+        a full record of zeros that reads as a real $0 measurement."""
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d, costs=None)
+            with self.assertRaises(RuntimeError) as ctx:
+                abbench.read_task_result(db, "t1", "get_architecture",
+                                         costs_timeout=0.3)
+            self.assertIn("costs", str(ctx.exception))
+
+    def test_raises_when_costs_is_an_empty_object(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d, costs="{}")
+            with self.assertRaises(RuntimeError):
+                abbench.read_task_result(db, "t1", "get_architecture",
+                                         costs_timeout=0.3)
+
+    def test_polls_until_bob_finishes_writing_costs(self):
+        """The write is asynchronous: the row can exist with empty costs at
+        the moment run_task returns. Waiting is the correct response to a
+        race, not recording zeros."""
+        import sqlite3
+        import threading
+
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d, costs="{}")
+
+            def finish_write():
+                time.sleep(0.4)
+                conn = sqlite3.connect(db)
+                conn.execute(
+                    "update tasks set costs = ? where id = ?",
+                    (json.dumps({"input": 1234, "output": 56, "cost": 0.42}), "t1"),
+                )
+                conn.commit()
+                conn.close()
+
+            t = threading.Thread(target=finish_write)
+            t.start()
+            try:
+                res = abbench.read_task_result(db, "t1", "get_architecture",
+                                               costs_timeout=10.0)
+            finally:
+                t.join()
+
+            self.assertEqual(res["input_tokens"], 1234)
+            self.assertEqual(res["output_tokens"], 56)
+            self.assertEqual(res["cost_usd"], 0.42)
+
+    def test_omits_fields_absent_from_a_populated_costs_object(self):
+        """A costs object that exists but lacks a field must OMIT that field,
+        not default it to 0: paired_deltas already drops a pair whose record
+        has no such key, and abreport's _is_scored already treats a record
+        with no output_tokens as unscored. A zero would instead be averaged
+        in as a real datum."""
+        with tempfile.TemporaryDirectory() as d:
+            db = self._db(d, costs=json.dumps({"input": 10, "output": 5}))
+            res = abbench.read_task_result(db, "t1", "get_architecture",
+                                           costs_timeout=0.3)
+            self.assertEqual(res["input_tokens"], 10)
+            self.assertEqual(res["output_tokens"], 5)
+            self.assertNotIn("cost_usd", res)
+            self.assertNotIn("context_tokens", res)
+
+    def test_a_run_with_unwritten_costs_is_recorded_as_a_failure_not_a_zero(self):
+        """End-to-end at the main() level: the sweep must persist a failure
+        record with an error, and must NOT persist cost_usd/input_tokens of
+        zero for a run whose costs Bob never wrote."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path = os.path.join(d, "mcp.json")
+            lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+            out_dir = os.path.join(d, "out")
+            tasks_path = os.path.join(d, "tasks.json")
+            db_path = self._db(d, costs=None)
+
+            with open(bob_cfg_path, "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+            with open(lp_cfg_path, "w") as fh:
+                fh.write(LP_STDIO)
+            with open(tasks_path, "w") as fh:
+                json.dump({"tasks": [{"id": "t1", "prompt": "one",
+                                      "expect_tool": "get_architecture"}]}, fh)
+
+            with mock.patch.object(abbench, "run_task", return_value="t1"), \
+                 mock.patch.object(abbench, "COSTS_TIMEOUT_SECONDS", 0.3), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                   "--lp-config", lp_cfg_path, "--db", db_path,
+                                   "--tasks", tasks_path, "--cwd", d,
+                                   "--leanproxy-bin", "/usr/bin/true",
+                                   "--skip-preflight", "--ballast-points", "0"])
+
+            self.assertEqual(rc, 0)
+            with open(os.path.join(out_dir, os.listdir(out_dir)[0])) as fh:
+                persisted = json.load(fh)
+            self.assertEqual(len(persisted), 3)
+            for rec in persisted:
+                self.assertFalse(rec["succeeded"])
+                self.assertIn("error", rec)
+                self.assertNotIn("cost_usd", rec)
+                self.assertNotIn("input_tokens", rec)
+
+
+class TestPairedSummaryExcludesFailedRuns(unittest.TestCase):
+    """Review Important #2: abbench's own failure note claimed a failed run
+    "has no cost/turn metrics, so it is EXCLUDED from the paired-delta
+    comparison above". That is true only for a run that CRASHED. A run that
+    completed but never found the expected tool carries full cost/turn
+    fields and was averaged straight into the summary — the exact class
+    abreport excludes (bc3025f), and the one that lets a badly-failing arm
+    look cheapest because a model that gives up early posts a low turn
+    count."""
+
+    def _rec(self, arm, task, **kw):
+        r = {"layer": "live", "origin": "measured", "arm": arm, "task": task,
+             "ballast_tools": 0, "turns": 5, "output_tokens": 100,
+             "cost_usd": 1.0, "succeeded": True}
+        r.update(kw)
+        return r
+
+    def test_a_completed_but_unsuccessful_run_is_not_paired(self):
+        """native/t1 and router/t1 both carry metrics, but router gave up
+        early (succeeded False, turns 1). Pairing them would report the
+        give-up as a 4-turn saving."""
+        records = [
+            self._rec("native", "t1@0", turns=5, cost_usd=1.0),
+            self._rec("router", "t1@0", turns=1, cost_usd=0.1, succeeded=False),
+            self._rec("native", "t2@0", turns=5, cost_usd=1.0),
+            self._rec("router", "t2@0", turns=6, cost_usd=1.2),
+        ]
+        lines = abbench.paired_summary_lines(records)
+        turns_lines = [l for l in lines if "router" in l and "turns" in l]
+        self.assertEqual(len(turns_lines), 1)
+        self.assertIn("pairs=1", turns_lines[0])
+        self.assertNotIn("-4", turns_lines[0])
+
+    def test_summary_lines_report_the_success_rate_behind_each_verdict(self):
+        records = [
+            self._rec("native", "t1@0"),
+            self._rec("router", "t1@0", succeeded=False),
+            self._rec("native", "t2@0"),
+            self._rec("router", "t2@0"),
+        ]
+        lines = abbench.paired_summary_lines(records)
+        router_lines = [l for l in lines if "router" in l]
+        self.assertTrue(router_lines)
+        for line in router_lines:
+            self.assertIn("50%", line)
+
+    def test_a_crashed_run_without_metrics_is_still_excluded(self):
+        records = [
+            self._rec("native", "t1@0"),
+            {"layer": "live", "arm": "router", "task": "t1@0", "ballast_tools": 0,
+             "succeeded": False, "error": "no new task row appeared"},
+            self._rec("native", "t2@0"),
+            self._rec("router", "t2@0"),
+        ]
+        lines = abbench.paired_summary_lines(records)
+        turns_lines = [l for l in lines if "router" in l and "turns" in l]
+        self.assertEqual(len(turns_lines), 1)
+        self.assertIn("pairs=1", turns_lines[0])
+
+    def test_failure_note_does_not_claim_failed_runs_lack_metrics(self):
+        """The note must describe what actually happens now — both kinds of
+        failure are excluded — instead of asserting a reason ("has no
+        cost/turn metrics") that is false for the completed-but-failed
+        kind."""
+        records = [
+            self._rec("native", "t1@0"),
+            self._rec("router", "t1@0", succeeded=False),
+        ]
+        note = "\n".join(abbench.failure_note_lines(records))
+        self.assertNotIn("has no cost/turn metrics", note)
+        self.assertIn("router/t1@0", note)
+
+
+class TestLeanproxyBinaryProvenance(unittest.TestCase):
+    """Review Important #3: Layer 2 defaults to ~/.local/bin/leanproxy-mcp
+    while Layer 1 builds from source, and Layer 3 joins the two on
+    ballast_tools alone. Nothing recorded which binary produced a live run,
+    so the join could silently multiply a working-tree residency figure by
+    turn counts from a different proxy build — the same cross-layer
+    divergence class as reviews C-1/C-2, with no guard."""
+
+    def test_provenance_identifies_the_binary_by_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "leanproxy-mcp")
+            with open(p, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(p, 0o755)
+
+            prov = abbench.binary_provenance(p)
+            self.assertEqual(prov["leanproxy_bin"], os.path.abspath(p))
+            self.assertEqual(len(prov["leanproxy_sha256"]), 64)
+
+            with open(p, "w") as fh:
+                fh.write("#!/bin/sh\nexit 1\n")
+            self.assertNotEqual(prov["leanproxy_sha256"],
+                                abbench.binary_provenance(p)["leanproxy_sha256"])
+
+    def test_missing_binary_refuses_before_any_run(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path = os.path.join(d, "mcp.json")
+            lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+            tasks_path = os.path.join(d, "tasks.json")
+            with open(bob_cfg_path, "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+            with open(lp_cfg_path, "w") as fh:
+                fh.write(LP_STDIO)
+            with open(tasks_path, "w") as fh:
+                json.dump({"tasks": [{"id": "t1", "prompt": "p",
+                                      "expect_tool": "get_architecture"}]}, fh)
+
+            with mock.patch.object(abbench, "run_task") as run_task_mock, \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", os.path.join(d, "out"),
+                                   "--bob-config", bob_cfg_path,
+                                   "--lp-config", lp_cfg_path,
+                                   "--db", os.path.join(d, "bob.db"),
+                                   "--tasks", tasks_path, "--cwd", d,
+                                   "--leanproxy-bin", os.path.join(d, "nope"),
+                                   "--skip-preflight", "--ballast-points", "0"])
+
+            self.assertEqual(rc, 2)
+            run_task_mock.assert_not_called()
+
+    def test_every_live_record_carries_the_binary_hash(self):
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            bob_cfg_path = os.path.join(d, "mcp.json")
+            lp_cfg_path = os.path.join(d, "leanproxy_servers.yaml")
+            out_dir = os.path.join(d, "out")
+            tasks_path = os.path.join(d, "tasks.json")
+            db_path = os.path.join(d, "bob.db")
+
+            with open(bob_cfg_path, "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+            with open(lp_cfg_path, "w") as fh:
+                fh.write(LP_STDIO)
+            with open(tasks_path, "w") as fh:
+                json.dump({"tasks": [{"id": "t1", "prompt": "one",
+                                      "expect_tool": "get_architecture"}]}, fh)
+
+            def fake_read_task_result(db, task_id, expect_tool, costs_timeout=None):
+                return {"task_id": task_id, "input_tokens": 1, "output_tokens": 1,
+                        "cache_read": 0, "cache_write": 0, "cost_usd": 0.1,
+                        "context_tokens": 10, "turns": 2, "succeeded": True}
+
+            with mock.patch.object(abbench, "run_task", return_value="task-1"), \
+                 mock.patch.object(abbench, "read_task_result",
+                                   side_effect=fake_read_task_result), \
+                 mock.patch.dict(os.environ, {"LEANPROXY_AB_LIVE": "1"}):
+                rc = abbench.main(["--out", out_dir, "--bob-config", bob_cfg_path,
+                                   "--lp-config", lp_cfg_path, "--db", db_path,
+                                   "--tasks", tasks_path, "--cwd", d,
+                                   "--leanproxy-bin", "/usr/bin/true",
+                                   "--skip-preflight", "--ballast-points", "0"])
+
+            self.assertEqual(rc, 0)
+            with open(os.path.join(out_dir, os.listdir(out_dir)[0])) as fh:
+                persisted = json.load(fh)
+            self.assertEqual(len(persisted), 3)
+            expected = abbench.binary_provenance("/usr/bin/true")
+            for rec in persisted:
+                self.assertEqual(rec["leanproxy_sha256"], expected["leanproxy_sha256"])
+                self.assertEqual(rec["leanproxy_bin"], expected["leanproxy_bin"])
 
 
 if __name__ == "__main__":

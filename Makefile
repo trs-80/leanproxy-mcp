@@ -141,7 +141,16 @@ endif
 	@echo "$(CURDIR). abbench refuses to start on a dirty working tree; commit or"
 	@echo "stash first. It swaps ~/.bob/settings/mcp.json per arm and restores it on"
 	@echo "every exit path, including SIGINT/SIGTERM/SIGHUP."
-	python3 scripts/abbench.py --out bench-results
+	@# Layer 3 joins this sweep to Layer 1's residency figures, and Layer 1
+	@# builds its proxy from source into a temp dir. Building here too keeps
+	@# both layers on the same working tree rather than joining live turn
+	@# counts against whatever build happens to sit in ~/.local/bin. Not
+	@# dist/: that is the path Bob's own mcp.json launches, and overwriting
+	@# it mid-sweep would swap the proxy under a running session.
+	@mkdir -p $(BENCH_BIN_DIR)
+	$(GO) build -trimpath -o $(BENCH_BIN_DIR)/$(BINARY_NAME) .
+	python3 scripts/abbench.py --out bench-results \
+		--leanproxy-bin $(BENCH_BIN_DIR)/$(BINARY_NAME)
 
 .PHONY: test-all
 test-all: lint test test-e2e ## Run lint, unit tests, and E2E tests
@@ -187,6 +196,9 @@ changelog: ## Generate changelog from git log
 
 BINARY_NAME := leanproxy-mcp
 DIST_DIR := dist
+# Deliberately not DIST_DIR: Bob's mcp.json launches dist/leanproxy-mcp, and
+# the live sweep must not rebuild the binary a running session is using.
+BENCH_BIN_DIR := .bench-bin
 GO := go
 GOLANGCI_VERSION := v1.62.0
 GOPATH := $(shell go env GOPATH)
