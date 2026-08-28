@@ -45,10 +45,13 @@ func TestWriteReportRoundTrips(t *testing.T) {
 // being worth paying.
 //
 // The small points are not padding. Task 3 measured the router arm's fixed
-// wrapper floor at ~2174 B, which EXCEEDS a native payload below roughly 8
-// tools — the router crossover sits between 4 and 8, and that crossover is the
-// breakeven this harness exists to find. A sweep starting at 25 would step
-// straight over it.
+// wrapper floor at ~2174 B. Two different crossovers sit in this range and
+// the small points exist to catch both: router bytes alone exceed native
+// bytes only below ~4 tools (native is already ahead at 4: 2729 B vs 2174 B),
+// but the full three-way ordering router < lazy < native does not hold until
+// ~8 tools — below that, lazy's low per-tool stub overhead undercuts even the
+// router's fixed floor. That second crossover is the breakeven this harness
+// exists to find. A sweep starting at 25 would step straight over both.
 //
 // Zero is deliberately absent: with no servers configured the proxy has nothing
 // to proxy and `Capture(ArmRouter, ...)` fails with "read initialize: EOF".
@@ -65,11 +68,11 @@ func TestResidencySweep(t *testing.T) {
 
 	var recs []Record
 	for _, tools := range ballastPoints {
-		servers, perServer := 0, 0
-		if tools > 0 {
-			servers = 2 // split the load so the shape is not one giant server
-			perServer = tools / servers
-		}
+		// ballastPoints has no zero (see its doc comment), so this always
+		// divides a positive tool count across 2 servers — no zero-tools
+		// branch needed.
+		const servers = 2 // split the load so the shape is not one giant server
+		perServer := tools / servers
 		specs := BallastSpecs(mock, servers, perServer)
 		// Record the tool count actually created, not the nominal sweep point:
 		// integer division can drop a tool and the report must not claim
@@ -90,7 +93,9 @@ func TestResidencySweep(t *testing.T) {
 				PayloadBytes:    len(payload),
 				ResidencyTokens: est.EstimateTokens(string(payload)),
 			})
-			t.Logf("arm=%-7s ballast_tools=%3d bytes=%7d residency_tokens=%6d",
+			// "tokens_est": reporter.NewEstimator is ceil(bytes/4), not a real
+			// tokenizer count — see the ResidencyTokens field doc.
+			t.Logf("arm=%-7s ballast_tools=%3d bytes=%7d tokens_est=%6d",
 				arm, actual, len(payload), est.EstimateTokens(string(payload)))
 		}
 	}
@@ -107,7 +112,11 @@ func TestResidencySweep(t *testing.T) {
 }
 
 // TestResidencyOrderingHoldsAcrossSweep asserts the cost ordering the design
-// predicts, at every sweep point rather than at one.
+// predicts, at {50, 200} — two points comfortably past the ~8-tool ordering
+// crossover documented on ballastPoints above. It intentionally does not
+// cover the full sweep: router < lazy < native legitimately does not hold at
+// 2 or 4 tools, and TestResidencySweep is what records those points without
+// asserting an ordering that would fail there.
 func TestResidencyOrderingHoldsAcrossSweep(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds two binaries; skipped in -short")

@@ -128,6 +128,21 @@ func (c *Client) ToolsListRaw() ([]byte, error) {
 	return res, nil
 }
 
+// CallTool invokes tools/call for name with the given arguments and returns
+// the raw result. Used to verify actual behavior beyond the tools/list shape
+// — e.g. that a router-arm wrapper tool can really reach an upstream, not
+// just that it advertises itself.
+func (c *Client) CallTool(name string, arguments map[string]any) (json.RawMessage, error) {
+	res, err := c.call("tools/call", map[string]any{
+		"name":      name,
+		"arguments": arguments,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 // Close shuts stdin, waits for the subprocess to exit, and removes the
 // isolated HOME directory Dial created for it.
 func (c *Client) Close() error {

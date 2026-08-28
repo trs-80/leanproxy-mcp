@@ -132,9 +132,12 @@ bench-e2e: ## Run the free residency sweep (no LLM, no coins, CI-safe)
 	$(GO) test ./tests/bench/e2e/ -run 'TestResidency' -v -timeout 10m
 
 .PHONY: bench-e2e-live
-bench-e2e-live: ## Run the live A/B sweep (SPENDS COINS; requires LEANPROXY_AB_LIVE=1)
+bench-e2e-live: ## Run the live A/B sweep (SPENDS COINS; requires LEANPROXY_AB_LIVE=1 set by the caller)
+ifndef LEANPROXY_AB_LIVE
+	$(error LEANPROXY_AB_LIVE=1 is required — this target spends coins. Run: LEANPROXY_AB_LIVE=1 make bench-e2e-live)
+endif
 	@echo "Running live A/B sweep — this spends coins."
-	LEANPROXY_AB_LIVE=1 python3 scripts/abbench.py --out bench-results
+	python3 scripts/abbench.py --out bench-results
 
 .PHONY: test-all
 test-all: lint test test-e2e ## Run lint, unit tests, and E2E tests
