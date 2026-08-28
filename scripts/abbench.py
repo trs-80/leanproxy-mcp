@@ -68,12 +68,21 @@ def _lp_enabled_servers(lp_cfg_text: str) -> list:
     nested `enabled:`) that this has no business interpreting. Content that
     doesn't fit the expected shape *inside* `servers:` raises rather than
     silently under-reporting — a confound guard that can under-report is
-    worse than one that refuses to run.
+    worse than one that refuses to run. This includes content indented
+    deeper than an item's own key column when the key that precedes it
+    already carried a scalar value: real YAML rejects that shape outright
+    ("mapping values are not allowed here"), so treating it as harmless
+    nesting would silently drop a server that really is enabled. Only a key
+    with an *empty* inline value (a genuine block opener, e.g. `retry:`)
+    may be followed by deeper-indented content, and that content is then
+    skipped wholesale — this parser does not care what it says.
     """
     names = []
     item = None          # top-level keys collected for the item being scanned
     item_dash_indent = None  # column of the '-' that started this item
     item_key_indent = None   # column at which this item's own keys sit
+    last_key_empty = False   # did the most recent item_key_indent key have no inline value?
+    in_nested = False        # are we inside a block that key legitimately opened?
     in_servers = False
 
     def _flush():
@@ -83,6 +92,14 @@ def _lp_enabled_servers(lp_cfg_text: str) -> list:
         enabled = item.get("enabled")
         if name and enabled is not None and enabled.strip().lower() == "true":
             names.append(name.strip().strip("\"'"))
+
+    def _reset_item():
+        nonlocal item, item_dash_indent, item_key_indent, last_key_empty, in_nested
+        item = None
+        item_dash_indent = None
+        item_key_indent = None
+        last_key_empty = False
+        in_nested = False
 
     for raw in lp_cfg_text.splitlines():
         line = _strip_comment(raw).rstrip()
@@ -94,23 +111,24 @@ def _lp_enabled_servers(lp_cfg_text: str) -> list:
         if not in_servers:
             km = _KEY_RE.match(content)
             if indent == 0 and km and km.group("key") == "servers":
+                if km.group("value").strip():
+                    raise ValueError(
+                        f"unsupported inline value for the servers: block: {raw!r} "
+                        f"— expected a block list, not a flow-style/scalar value"
+                    )
                 in_servers = True
             continue  # nothing outside `servers:` is ours to interpret
 
         if indent == 0:
             # dedent to a sibling top-level key: the servers block is over
             _flush()
-            item = None
-            item_dash_indent = None
-            item_key_indent = None
+            _reset_item()
             in_servers = False
             continue
 
         if item is not None and indent <= item_dash_indent:
             _flush()
-            item = None
-            item_dash_indent = None
-            item_key_indent = None
+            _reset_item()
 
         m_item = _LIST_ITEM_RE.match(content)
         if m_item:
@@ -119,20 +137,36 @@ def _lp_enabled_servers(lp_cfg_text: str) -> list:
             km = _KEY_RE.match(rest)
             if not km:
                 raise ValueError(f"unrecognised leanproxy config line: {raw!r}")
-            item = {km.group("key"): km.group("value").strip()}
+            value = km.group("value").strip()
+            item = {km.group("key"): value}
             item_dash_indent = indent
             item_key_indent = indent + (len(content) - len(rest))
+            last_key_empty = not value
+            in_nested = False
             continue
 
         if item is not None and indent == item_key_indent:
             km = _KEY_RE.match(content)
             if not km:
                 raise ValueError(f"unrecognised leanproxy config line: {raw!r}")
-            item[km.group("key")] = km.group("value").strip()
+            value = km.group("value").strip()
+            item[km.group("key")] = value
+            last_key_empty = not value
+            in_nested = False
             continue
 
         if item is not None and indent > item_key_indent:
-            continue  # nested under one of this item's keys — not top-level
+            if in_nested:
+                continue  # already inside a legitimately-opened nested block
+            if last_key_empty:
+                in_nested = True
+                continue
+            # the preceding key already had a scalar value — real YAML
+            # rejects a deeper-indented continuation after it outright
+            raise ValueError(
+                f"unrecognised leanproxy config line: {raw!r} — indented "
+                f"past a key that already had a value"
+            )
 
         # inside `servers:`, indented, but not attributable to any open item
         raise ValueError(f"unrecognised leanproxy config line: {raw!r}")

@@ -88,6 +88,69 @@ class TestLpEnabledServers(unittest.TestCase):
         with self.assertRaises(ValueError):
             abbench._lp_enabled_servers(lp)
 
+    def test_over_indented_continuation_after_a_scalar_raises(self):
+        """N1: `enabled: true` indented deeper than `name:` in the same item,
+        with no key at name:'s own indent opening a block, is not legal YAML
+        (real YAML rejects it as 'mapping values are not allowed here') and
+        must not be silently dropped — it must raise, not return []."""
+        lp = "servers:\n  - name: context7\n      enabled: true\n"
+        with self.assertRaises(ValueError):
+            abbench._lp_enabled_servers(lp)
+
+    def test_deeply_nested_content_under_an_empty_valued_key_is_skipped(self):
+        """The legitimate counterpart to N1: a key with an EMPTY inline value
+        (`http:`) genuinely opens a nested block, and content several levels
+        deeper inside it must still be skipped, not attributed to the item."""
+        lp = (
+            "servers:\n"
+            "  - name: context7\n"
+            "    enabled: true\n"
+            "    http:\n"
+            "      headers:\n"
+            "        enabled: true\n"
+            "        nested:\n"
+            "          enabled: true\n"
+        )
+        self.assertEqual(abbench._lp_enabled_servers(lp), ["context7"])
+
+    def test_flow_style_list_item_raises(self):
+        lp = "servers:\n  - {name: context7, enabled: true}\n"
+        with self.assertRaises(ValueError):
+            abbench._lp_enabled_servers(lp)
+
+    def test_flow_style_servers_value_raises_rather_than_silently_finding_nothing(self):
+        """`servers: [...]` all on one line would otherwise be silently
+        treated as an empty block list — a real server enabled that way
+        would vanish from the confound check without a trace."""
+        lp = "servers: [{name: context7, enabled: true}]\n"
+        with self.assertRaises(ValueError):
+            abbench._lp_enabled_servers(lp)
+
+    def test_empty_servers_block_returns_no_names(self):
+        lp = "servers:\nbouncer:\n  enabled: true\n"
+        self.assertEqual(abbench._lp_enabled_servers(lp), [])
+
+    def test_crlf_line_endings_parse_correctly(self):
+        lp = "servers:\r\n  - name: context7\r\n    enabled: true\r\n"
+        self.assertEqual(abbench._lp_enabled_servers(lp), ["context7"])
+
+    def test_unquoted_hash_in_name_is_preserved_not_treated_as_comment(self):
+        lp = "servers:\n  - name: conte#xt7\n    enabled: true\n"
+        self.assertEqual(abbench._lp_enabled_servers(lp), ["conte#xt7"])
+
+    def test_multi_document_yaml_scans_each_document(self):
+        lp = (
+            "---\n"
+            "servers:\n"
+            "  - name: context7\n"
+            "    enabled: true\n"
+            "---\n"
+            "servers:\n"
+            "  - name: other\n"
+            "    enabled: true\n"
+        )
+        self.assertEqual(abbench._lp_enabled_servers(lp), ["context7", "other"])
+
     def test_sections_after_the_servers_block_are_not_validated(self):
         """A real leanproxy_servers.yaml has unrelated top-level sections
         (e.g. `bouncer:`) after the servers list, with their own nested
