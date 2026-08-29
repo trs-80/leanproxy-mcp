@@ -86,18 +86,32 @@ dev: tidy ## Run with file watcher (requires entr)
 	@find . -name "*.go" -not -path "./vendor/*" | entr -r $(GO) run .
 
 .PHONY: test-e2e
-test-e2e: ## Run E2E tests (requires built binary)
-	@echo "Building binary for E2E tests..."
-	$(GO) build -ldflags="$(LDFLAGS)" -trimpath -o $(BINARY_NAME) .
+# The e2e suite gates every test on a binary at tests/e2e/leanproxy-mcp
+# (binaryAvailable in tests/e2e/main_test.go) and SKIPS when it is absent.
+# These targets used to build to $(BINARY_NAME) in the repo root instead, so
+# the build succeeded, the binary landed where nothing looks for it, and the
+# whole suite reported green having run nothing. Two places decided where the
+# binary goes and they disagreed; now only TestMain decides. LEANPROXY_E2E
+# makes it build the binary itself AND turns a missing binary into a hard
+# failure, so a skip can no longer hide inside a green run.
+test-e2e: ## Run E2E tests (TestMain builds the binary; skips are failures)
 	@echo "Running E2E tests..."
-	$(GO) test -v -timeout 10m ./tests/e2e/...
+	LEANPROXY_E2E=1 $(GO) test -v -timeout 10m ./tests/e2e/...
 
 .PHONY: test-e2e-short
-test-e2e-short: ## Run E2E tests (short mode, requires built binary)
-	@echo "Building binary for E2E tests..."
-	$(GO) build -ldflags="$(LDFLAGS)" -trimpath -o $(BINARY_NAME) .
+test-e2e-short: ## Run E2E tests (short mode; TestMain builds the binary)
 	@echo "Running E2E tests (short mode)..."
-	$(GO) test -v -short -timeout 2m ./tests/e2e/...
+	LEANPROXY_E2E=1 $(GO) test -v -short -timeout 2m ./tests/e2e/...
+
+.PHONY: test-integration
+test-integration: ## Run the build-tagged integration suite (tests/integration)
+	@echo "Running integration-tagged tests..."
+	$(GO) test -v -tags=integration -timeout 5m ./tests/integration/...
+
+.PHONY: test-python
+test-python: ## Run the pytest suite for the A/B benchmark harness
+	@echo "Running Python tests..."
+	python3 -m pytest tests/bench/e2e/ -q
 
 .PHONY: bench
 bench: ## Run token-economy + NFR benchmarks, capture into bench-results/
@@ -158,7 +172,7 @@ endif
 		--mock-bin $(BENCH_BIN_DIR)/mockmcp
 
 .PHONY: test-all
-test-all: lint test test-e2e ## Run lint, unit tests, and E2E tests
+test-all: lint test test-e2e test-integration test-python ## Run lint, unit, E2E, integration-tagged, and Python tests
 
 .PHONY: vet
 vet: ## Run go vet
