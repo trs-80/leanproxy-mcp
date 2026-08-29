@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+// TestMain redirects the home directory for the whole package so that any
+// dispatcher built with NewDispatcher(nil) — which resolves its quarantine dir
+// from os.UserHomeDir() — can never write to, or TTL-sweep, the operator's real
+// ~/.leanproxy/quarantine store. Tests that need a specific home (e.g.
+// TestQuarantine_NoHomeDirFailsClosed) override it with t.Setenv.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "leanproxy-injection-home")
+	if err != nil {
+		panic("TestMain: cannot create throwaway home dir: " + err.Error())
+	}
+	os.Setenv("HOME", home)        // os.UserHomeDir reads $HOME on unix
+	os.Setenv("USERPROFILE", home) // ... and %USERPROFILE% on windows
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
 	if len(rules) != 3 {
@@ -92,8 +109,13 @@ func TestDispatch_BlockAtBoundary(t *testing.T) {
 	}
 }
 
+// The quarantine band (50-79) persists a JSON file and runs the TTL sweep, so
+// these tests must be given an isolated quarantine dir. NewDispatcher(nil)
+// resolves to $HOME/.leanproxy/quarantine, i.e. the operator's real quarantine
+// store, which the tests would both litter and TTL-sweep.
 func TestDispatch_QuarantineMediumRisk(t *testing.T) {
-	d := NewDispatcher(nil)
+	tmpDir := t.TempDir()
+	d := NewDispatcherWithQuarantineDir(nil, tmpDir)
 	result := d.Dispatch(Result{RiskScore: 60, Payload: "suspicious payload", Matches: []Match{{PatternName: "test", Weight: 60}}})
 	if result.Action != ActionQuarantine {
 		t.Errorf("expected quarantine action, got %s", result.Action)
@@ -101,13 +123,13 @@ func TestDispatch_QuarantineMediumRisk(t *testing.T) {
 	if result.QuarantineID == "" {
 		t.Error("expected non-empty quarantine ID")
 	}
-	if result.QuarantineDir == "" {
-		t.Error("expected non-empty quarantine dir")
+	if result.QuarantineDir != tmpDir {
+		t.Errorf("expected quarantine dir %s, got %s", tmpDir, result.QuarantineDir)
 	}
 }
 
 func TestDispatch_QuarantineAtLowerBoundary(t *testing.T) {
-	d := NewDispatcher(nil)
+	d := NewDispatcherWithQuarantineDir(nil, t.TempDir())
 	result := d.Dispatch(Result{RiskScore: 50, Payload: "payload"})
 	if result.Action != ActionQuarantine {
 		t.Errorf("expected quarantine action at risk=50, got %s", result.Action)
@@ -115,7 +137,7 @@ func TestDispatch_QuarantineAtLowerBoundary(t *testing.T) {
 }
 
 func TestDispatch_QuarantineAtUpperBoundary(t *testing.T) {
-	d := NewDispatcher(nil)
+	d := NewDispatcherWithQuarantineDir(nil, t.TempDir())
 	result := d.Dispatch(Result{RiskScore: 79, Payload: "payload"})
 	if result.Action != ActionQuarantine {
 		t.Errorf("expected quarantine action at risk=79, got %s", result.Action)

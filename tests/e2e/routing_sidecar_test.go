@@ -57,7 +57,7 @@ servers: []
 	providersPath := filepath.Join(testDir, "providers.yaml")
 	writeFile(t, providersPath, "this is: not: valid: yaml: [\n")
 
-	_, stderr, _ := runBinaryWithTimeout([]string{
+	_, stderr, _ := runBinaryWithTimeout(t, []string{
 		"serve",
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
@@ -249,7 +249,7 @@ servers: []
 
 	t.Setenv("LEANPROXY_CONFIG", configPath)
 
-	stdout, stderr, exitCode := runBinary("server", "list")
+	stdout, stderr, exitCode := runBinary(t, "server", "list")
 	t.Logf("server list (with budget): exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {
@@ -274,7 +274,7 @@ func TestStory_17_2_BudgetFlag_Parsed(t *testing.T) {
 servers: []
 `)
 
-			_, stderr, _ := runBinaryWithTimeout([]string{
+			_, stderr, _ := runBinaryWithTimeout(t, []string{
 				"serve",
 				"--config", configPath,
 				"--listen", "127.0.0.1:0",
@@ -310,7 +310,7 @@ servers: []
 `)
 	t.Setenv("LEANPROXY_CONFIG", configPath)
 
-	_, stderr, _ := runBinary("add", "github", "--dry-run", "--i-understand-the-risks")
+	_, stderr, _ := runBinary(t, "add", "github", "--dry-run", "--i-understand-the-risks")
 	if !strings.Contains(strings.ToLower(stderr), "github") {
 		t.Logf("note: add github --dry-run did not mention github in stderr: %s", stderr)
 	}
@@ -331,7 +331,7 @@ servers: []
 	t.Setenv("LEANPROXY_CONFIG", configPath)
 	t.Setenv("LEANPROXY_FILESYSTEM_ROOTS", testDir)
 
-	_, stderr, _ := runBinary("add", "filesystem", "--dry-run", "--i-understand-the-risks")
+	_, stderr, _ := runBinary(t, "add", "filesystem", "--dry-run", "--i-understand-the-risks")
 	if !strings.Contains(strings.ToLower(stderr), "filesystem") {
 		t.Logf("note: add filesystem --dry-run did not mention filesystem in stderr: %s", stderr)
 	}
@@ -353,12 +353,12 @@ servers: []
 	t.Setenv("LEANPROXY_POSTGRES_CONNECTION", "postgres://localhost/test")
 	t.Setenv("LEANPROXY_REDIS_ADDRESS", "localhost:6379")
 
-	_, stderr, _ := runBinary("add", "postgres", "--dry-run", "--i-understand-the-risks")
+	_, stderr, _ := runBinary(t, "add", "postgres", "--dry-run", "--i-understand-the-risks")
 	if !strings.Contains(strings.ToLower(stderr), "postgres") && !strings.Contains(strings.ToLower(stderr), "postgresql") {
 		t.Logf("note: add postgres --dry-run did not mention postgres in stderr: %s", stderr)
 	}
 
-	_, stderr, _ = runBinary("add", "redis", "--dry-run", "--i-understand-the-risks")
+	_, stderr, _ = runBinary(t, "add", "redis", "--dry-run", "--i-understand-the-risks")
 	if !strings.Contains(strings.ToLower(stderr), "redis") {
 		t.Logf("note: add redis --dry-run did not mention redis in stderr: %s", stderr)
 	}

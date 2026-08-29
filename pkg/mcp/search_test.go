@@ -59,6 +59,42 @@ func TestSearchTools_NameMatchOutranksDescriptionMatch(t *testing.T) {
 	assert.True(t, strings.HasPrefix(got[0], "zzz_deploy_app"), "name match must rank first, got %q", got[0])
 }
 
+// A single full-coverage match must not silence the tool the query is
+// actually about. Reproduces a live A/B sweep failure: the model asked
+// search_tools for "search graph trace callers", got back exactly one tool
+// (search_graph, which happened to hit all four words), never saw trace_path,
+// and burned four turns without ever reaching the tool it needed.
+//
+// Word hits below mirror the real codebase-memory cache that produced it:
+// search_graph scores 4/4 (search+graph in the name, trace+callers in the
+// description) and clears the full-coverage bonus; trace_path scores 3/4,
+// missing only "search".
+func TestSearchTools_OneFullMatchDoesNotHidePartialMatches(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(newMockPool(), nil)
+	seedToolCache(h, "cbm",
+		Tool{
+			Name:        "search_graph",
+			Description: "Search the code knowledge graph. Use INSTEAD OF grep when finding definitions; can trace relationships and callers.",
+			InputSchema: json.RawMessage(`{}`),
+		},
+		Tool{
+			Name:        "trace_path",
+			Description: "Trace paths through the code graph. Modes: calls (callers/callees), data_flow, cross_service.",
+			InputSchema: json.RawMessage(`{}`),
+		})
+
+	got := h.searchToolCacheFiltered("search graph trace callers", "", 120)
+
+	joined := strings.Join(got, "\n")
+	assert.Contains(t, joined, "cbm_trace_path",
+		"trace_path (3 of 4 query words) was dropped because search_graph alone matched all four")
+	require.NotEmpty(t, got)
+	assert.True(t, strings.HasPrefix(got[0], "cbm_search_graph"),
+		"the full-coverage match must still rank first, got %q", got[0])
+}
+
 func BenchmarkSearchToolCacheFiltered(b *testing.B) {
 	h := NewHandler(newMockPool(), nil)
 	schema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)

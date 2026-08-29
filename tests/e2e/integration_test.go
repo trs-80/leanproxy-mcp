@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
 )
 
 func writeMCPServerScript(t *testing.T, path string) {
@@ -147,8 +149,14 @@ func TestMCPServer_LoadAndToolCall(t *testing.T) {
 	cmd.Stdin = stdinReader
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = &stderr
+	// LEANPROXY_HOME, not HOME: `server run --stdio` writes the status file
+	// (~/.config/leanproxy/status/current.json) and this test spawns a real
+	// upstream, which would inherit a faked HOME. Without the override this
+	// test overwrote the operator's live status file with its own PID and a
+	// "test-server" entry — see cachefile.HomeDir's doc comment.
 	cmd.Env = append(os.Environ(),
 		"LEANPROXY_CONFIG="+configPath,
+		cachefile.HomeEnv+"="+t.TempDir(),
 	)
 
 	if err := cmd.Start(); err != nil {
@@ -327,7 +335,7 @@ func TestMCPServer_ServerListAfterLoad(t *testing.T) {
 
 	t.Setenv("LEANPROXY_CONFIG", configPath)
 
-	stdout, stderr, exitCode := runBinary("server", "list")
+	stdout, stderr, exitCode := runBinary(t, "server", "list")
 	t.Logf("server list output: stdout=%s stderr=%s exit=%d", stdout, stderr, exitCode)
 
 	if exitCode != 0 {

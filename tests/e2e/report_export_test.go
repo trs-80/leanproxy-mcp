@@ -22,7 +22,7 @@ import (
 func TestStory_18_3_ExportCSV_HeaderAndNoPII(t *testing.T) {
 	requireBinary(t)
 
-	stdout, stderr, exitCode := runBinary("report", "--export", "csv")
+	stdout, stderr, exitCode := runBinary(t, "report", "--export", "csv")
 	t.Logf("report --export csv: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {
@@ -52,7 +52,7 @@ func TestStory_18_3_ExportCSV_HeaderAndNoPII(t *testing.T) {
 func TestStory_18_3_ExportJSON_ValidArray(t *testing.T) {
 	requireBinary(t)
 
-	stdout, stderr, exitCode := runBinary("report", "--export", "json")
+	stdout, stderr, exitCode := runBinary(t, "report", "--export", "json")
 	t.Logf("report --export json: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {
@@ -72,7 +72,7 @@ func TestStory_18_3_ExportToFile(t *testing.T) {
 	testDir := t.TempDir()
 	out := filepath.Join(testDir, "costs.csv")
 
-	stdout, _, exitCode := runBinary("report", "--export", "csv", "--output", out)
+	stdout, _, exitCode := runBinary(t, "report", "--export", "csv", "--output", out)
 	t.Logf("report --export csv --output: exit=%d stdout=%q", exitCode, stdout)
 
 	if exitCode != 0 {
@@ -96,7 +96,7 @@ func TestStory_18_3_ExportToFile(t *testing.T) {
 func TestStory_18_3_ExportSinceFilter(t *testing.T) {
 	requireBinary(t)
 
-	stdout, stderr, exitCode := runBinary("report", "--export", "json", "--since", "2020-01-01")
+	stdout, stderr, exitCode := runBinary(t, "report", "--export", "json", "--since", "2020-01-01")
 	t.Logf("report --export json --since: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {

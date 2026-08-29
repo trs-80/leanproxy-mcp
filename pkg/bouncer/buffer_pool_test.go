@@ -113,13 +113,28 @@ func TestBufferNotSharedAcrossGoroutines(t *testing.T) {
 	r1 := <-result
 	r2 := <-result
 
+	// Both buffers are held live simultaneously, so a correct pool must have
+	// handed out distinct backing arrays. Note we deliberately do NOT compare
+	// r1 and r2 byte-wise for equality: two correctly zeroed buffers ARE
+	// byte-identical, so content equality is the expected result, not a leak.
+	if &r1[0] == &r2[0] {
+		t.Fatal("both goroutines received the same backing array - buffer shared across goroutines")
+	}
+
+	// Re-acquired buffers must carry no residue from the prior owner.
 	for i := range r1 {
-		if r1[i] != 0 && r2[i] != 0 {
-			if string(r1) == string(r2) {
-				t.Error("buffers appear to contain same data - possible leak")
-			}
+		if r1[i] != 0 {
+			t.Fatalf("reacquired buffer 1 not zeroed at index %d: got %#x", i, r1[i])
 		}
 	}
+	for i := range r2 {
+		if r2[i] != 0 {
+			t.Fatalf("reacquired buffer 2 not zeroed at index %d: got %#x", i, r2[i])
+		}
+	}
+
+	ReturnBuffer(r1)
+	ReturnBuffer(r2)
 }
 
 func BenchmarkBufferGetReturn(b *testing.B) {
