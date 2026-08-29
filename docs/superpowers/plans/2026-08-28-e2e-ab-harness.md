@@ -2064,11 +2064,11 @@ needed is a real cost of lazy loading, and token accounting alone cannot see it.
 
 `README.md:29-31` currently reads:
 
-> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. **Full results and methodology: [docs/benchmark-results.md](docs/benchmark-results.md).**
+> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. **Full results and methodology: [docs/benchmark-results.md](../../benchmark-results.md).**
 
 Replace with:
 
-> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. They measure the **tool-schema slice** via an accounting model, not end-to-end session cost — the model omits discovery round trips and charges a single stub rather than the full manifest. For measured end-to-end numbers run `make bench-e2e`. **Full results and methodology, including what the modelled figures do and do not claim: [docs/benchmark-results.md](docs/benchmark-results.md).**
+> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. They measure the **tool-schema slice** via an accounting model, not end-to-end session cost — the model omits discovery round trips and charges a single stub rather than the full manifest. For measured end-to-end numbers run `make bench-e2e`. **Full results and methodology, including what the modelled figures do and do not claim: [docs/benchmark-results.md](../../benchmark-results.md).**
 
 Do not change the headline table's numbers. They are correct for what they measure; the fix is stating what that is.
 

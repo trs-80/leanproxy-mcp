@@ -8,6 +8,16 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
+  # Also build on pull requests. `mkdocs build --strict` aborts on warnings, so
+  # a broken cross-reference fails this workflow — and until now that could
+  # only be discovered AFTER merging, because the workflow ran on main only.
+  # It cost exactly that: a bad relative link merged clean and left main red.
+  # PR runs build and stop; only a push to main deploys.
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
@@ -17,7 +27,10 @@ permissions:
   deployments: write
 
 concurrency:
-  group: docs-pages
+  # Per ref: main pushes still serialise with each other so two Pages deploys
+  # never overlap, while PR builds get their own lane instead of queueing
+  # behind a deploy.
+  group: docs-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -30,6 +43,7 @@ jobs:
           fetch-depth: 0
 
       - name: Create GitHub Deployment
+        if: github.event_name != 'pull_request'
         uses: chrnorm/deployment-action@v2
         with:
           environment-url: https://${{ github.repository_owner }}.github.io/leanproxy-mcp/
@@ -60,18 +74,22 @@ jobs:
         run: mkdocs build --strict --clean
 
       - name: Setup Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v4
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
       - name: Deploy to GitHub Pages
+        if: github.event_name != 'pull_request'
         id: deploy
         uses: actions/deploy-pages@v4
 
       - name: Update Deployment Status
+        if: github.event_name != 'pull_request'
         uses: chrnorm/deployment-status@v2
         with:
           environment-url: https://${{ github.repository_owner }}.github.io/leanproxy-mcp/
