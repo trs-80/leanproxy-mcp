@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 )
 
 type ServerStatus struct {
@@ -58,7 +60,7 @@ func NewFileStatusStore(listenAddr string, logger *slog.Logger) (*FileStatusStor
 		logger = slog.Default()
 	}
 
-	home, err := os.UserHomeDir()
+	home, err := cachefile.HomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("statusfile: get user home dir: %w", err)
 	}
@@ -160,7 +162,7 @@ func (s *FileStatusStore) writeLocked() {
 }
 
 func ReadCurrentStatus() (*StatusInfo, error) {
-	home, err := os.UserHomeDir()
+	home, err := cachefile.HomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("statusfile: get user home dir: %w", err)
 	}
@@ -201,7 +203,7 @@ func ReadCurrentStatusFromConfigDir(configDir string) (*StatusInfo, error) {
 }
 
 func ListStatusFiles() ([]string, error) {
-	home, err := os.UserHomeDir()
+	home, err := cachefile.HomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("statusfile: get user home dir: %w", err)
 	}

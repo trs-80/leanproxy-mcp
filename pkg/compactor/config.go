@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 	"github.com/mmornati/leanproxy-mcp/internal/netguard"
 	"github.com/mmornati/leanproxy-mcp/pkg/utils"
 )
@@ -73,7 +74,10 @@ func (c *Config) Validate() error {
 // an unconfigured compactor fail closed at Validate instead.
 func (c *Config) applyDefaults() {
 	if c.CacheDir == "" {
-		usr, err := os.UserHomeDir()
+		// cachefile.HomeDir, not os.UserHomeDir: the distilled cache is
+		// LeanProxy's own state and must follow $LEANPROXY_HOME with the rest
+		// of it.
+		usr, err := cachefile.HomeDir()
 		if err == nil {
 			c.CacheDir = filepath.Join(usr, ".config", "leanproxy", "distilled")
 		}

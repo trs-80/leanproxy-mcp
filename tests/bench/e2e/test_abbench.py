@@ -1622,6 +1622,9 @@ for line in sys.stdin:
 # A fake MCP server whose only tool reports the HOME environment variable it
 # was started with, for N-1: proving the preflight's subprocesses see an
 # isolated HOME rather than the operator's real one.
+# Reports the LEANPROXY_HOME it was spawned with — the variable the harness
+# isolates. HOME is left at the operator's real value on purpose; see
+# TestPreflightSpawnEnvironment.
 HOME_REPORTING_MCP_SERVER = r'''
 import json, os, sys
 for line in sys.stdin:
@@ -1636,7 +1639,7 @@ for line in sys.stdin:
     elif msg["method"] == "tools/list":
         result = {"tools": [{"name": "whoami", "description": "d"}]}
     elif msg["method"] == "tools/call":
-        result = {"content": [{"type": "text", "text": os.environ.get("HOME", "")}]}
+        result = {"content": [{"type": "text", "text": os.environ.get("LEANPROXY_HOME", "")}]}
     else:
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
                           "error": {"code": -32601, "message": "no such method"}}),
@@ -1679,7 +1682,7 @@ class TestMcpStdio(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 c.initialize()
 
-    def test_home_is_isolated_to_a_private_temp_dir_and_removed_on_close(self):
+    def test_state_dir_is_isolated_to_a_private_temp_dir_and_removed_on_close(self):
         """N-1: without this, every preflight spawn of leanproxy-mcp writes
         ballast tool caches into the operator's real ~/.config/leanproxy and
         rewrites the live daemon's status file — on the refusal path too.
@@ -1690,15 +1693,15 @@ class TestMcpStdio(unittest.TestCase):
             c.initialize()
             seen_home = c.call_tool_text("whoami", {})
             isolated_dir = c._home_dir
-            self.assertTrue(isolated_dir, "McpStdio did not record an isolated HOME dir")
+            self.assertTrue(isolated_dir, "McpStdio did not record an isolated state dir")
             self.assertEqual(seen_home, isolated_dir,
-                              "subprocess did not see the isolated HOME")
+                              "subprocess did not see the isolated LEANPROXY_HOME")
             self.assertNotEqual(os.path.realpath(isolated_dir), os.path.realpath(real_home))
             self.assertTrue(os.path.isdir(isolated_dir))
         self.assertFalse(os.path.exists(isolated_dir),
-                          "isolated HOME dir was not cleaned up on close")
+                          "isolated state dir was not cleaned up on close")
 
-    def test_home_is_isolated_even_when_the_subprocess_fails_to_start(self):
+    def test_state_dir_is_isolated_even_when_the_subprocess_fails_to_start(self):
         """The refusal path: a server that cannot even be spawned must still
         leave no isolated-home directory behind."""
         c = abbench.McpStdio("/nonexistent/leanproxy-does-not-exist", [], timeout=10)
@@ -1707,7 +1710,7 @@ class TestMcpStdio(unittest.TestCase):
                 pass
         self.assertIsNone(c._home_dir)
 
-    def test_each_instance_gets_its_own_isolated_home(self):
+    def test_each_instance_gets_its_own_isolated_state_dir(self):
         with abbench.McpStdio(sys.executable, ["-c", HOME_REPORTING_MCP_SERVER], timeout=10) as c1:
             c1.initialize()
             home1 = c1.call_tool_text("whoami", {})
@@ -2222,6 +2225,51 @@ class TestLeanproxyBinaryProvenance(unittest.TestCase):
             for rec in persisted:
                 self.assertEqual(rec["leanproxy_sha256"], expected["leanproxy_sha256"])
                 self.assertEqual(rec["leanproxy_bin"], expected["leanproxy_bin"])
+
+
+class TestPreflightSpawnEnvironment(unittest.TestCase):
+    """McpStdio must isolate LeanProxy's own state without relocating the
+    home of the upstream servers it spawns.
+
+    Overriding HOME did both, and the second half broke the preflight against
+    a real configuration: every upstream inherits the proxy's environment, and
+    codebase-memory-mcp derives its cache directory from HOME, so it refused
+    to start against its own running daemon. preflight then reported all
+    three arms unable to reach any expected tool and refused a configuration
+    whose live sweep — which Bob runs under the real HOME — would have worked.
+    Mirrors tests/bench/e2e/client.go's Dial."""
+
+    def _spawn_and_dump_env(self, d):
+        dump = os.path.join(d, "env.json")
+        script = os.path.join(d, "dump-env.sh")
+        with open(script, "w") as fh:
+            fh.write(
+                "#!/bin/sh\n"
+                f'printf \'{{"HOME":"%s","LEANPROXY_HOME":"%s"}}\' '
+                f'"$HOME" "$LEANPROXY_HOME" > {dump}\n'
+                "sleep 5\n"
+            )
+        os.chmod(script, 0o755)
+        with abbench.McpStdio(script, [], timeout=5.0):
+            for _ in range(50):
+                if os.path.exists(dump) and os.path.getsize(dump) > 0:
+                    break
+                time.sleep(0.1)
+            with open(dump) as fh:
+                return json.load(fh)
+
+    def test_upstreams_see_the_operators_real_home(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = self._spawn_and_dump_env(d)
+            self.assertEqual(env["HOME"], os.path.expanduser("~"))
+
+    def test_leanproxy_state_is_redirected_to_a_private_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = self._spawn_and_dump_env(d)
+            state = env["LEANPROXY_HOME"]
+            self.assertTrue(state, "no LEANPROXY_HOME set — the proxy would "
+                                   "write into the operator's config root")
+            self.assertNotEqual(state, os.path.expanduser("~"))
 
 
 if __name__ == "__main__":

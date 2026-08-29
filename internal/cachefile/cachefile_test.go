@@ -220,3 +220,34 @@ func TestDirHonorsHOME(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 }
+
+// LEANPROXY_HOME exists so a test harness can contain LeanProxy's own state
+// without lying to the processes LeanProxy spawns. The e2e A/B harness used
+// to isolate by overriding HOME, which every upstream MCP server inherits:
+// a stateful upstream (codebase-memory-mcp derives its cache directory from
+// HOME) then refused to start against its own running daemon, and the
+// preflight rejected a configuration whose live sweep would have worked.
+func TestDirHonorsLeanproxyHomeOverride(t *testing.T) {
+	override := t.TempDir()
+	t.Setenv(HomeEnv, override)
+
+	dir, err := Dir("toolcache")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(override, Root, "toolcache"), dir)
+
+	realHome, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.False(t, strings.HasPrefix(dir, filepath.Join(realHome, Root)),
+		"override must keep cache files out of the real home")
+}
+
+func TestHomeDirFallsBackToTheRealHomeWhenUnset(t *testing.T) {
+	t.Setenv(HomeEnv, "")
+
+	got, err := HomeDir()
+	require.NoError(t, err)
+
+	want, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}

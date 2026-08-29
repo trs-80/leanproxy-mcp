@@ -555,3 +555,24 @@ func TestWriteLocked_FileAsDirectory(t *testing.T) {
 
 	store.writeLocked()
 }
+
+// The status store must follow the same LEANPROXY_HOME override as
+// internal/cachefile: isolating it via HOME instead is what leaked into
+// every upstream server the proxy spawns. See
+// cachefile.TestDirHonorsLeanproxyHomeOverride.
+func TestStatusStoreHonorsLeanproxyHomeOverride(t *testing.T) {
+	override := t.TempDir()
+	t.Setenv("LEANPROXY_HOME", override)
+
+	store, err := NewFileStatusStore("127.0.0.1:0", nil)
+	require.NoError(t, err)
+	store.UpdateServers(nil)
+
+	written := filepath.Join(override, ".config", "leanproxy", "status", "current.json")
+	require.FileExists(t, written, "status file must land under the override, not the real home")
+
+	info, err := ReadCurrentStatus()
+	require.NoError(t, err)
+	require.NotNil(t, info, "ReadCurrentStatus must read from the override too")
+	assert.Equal(t, os.Getpid(), info.PID)
+}

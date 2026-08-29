@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 )
 
 // buildMockMCP compiles the standalone mock MCP server and returns its path.
@@ -203,5 +205,57 @@ func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 			t.Fatalf("sweep modified the planted sentinel status file %s: got %q, want %q",
 				statusFile, got, sentinelStatusContent)
 		}
+	}
+}
+
+// TestDialIsolatesLeanproxyStateWithoutMovingTheRealHome is the containment
+// rule this harness actually needs: isolate what LeanProxy writes for itself,
+// and change nothing else about the environment it measures.
+//
+// Overriding HOME did both. Every upstream MCP server the proxy spawns
+// inherits its environment, so an isolated HOME moved the home of servers the
+// harness does not own. codebase-memory-mcp derives its cache directory from
+// HOME and refuses to start when that disagrees with its already-running
+// daemon, so `preflight` reported all three arms unable to reach any expected
+// tool and refused a configuration whose live sweep runs under the operator's
+// real HOME and would have worked. The preflight was gating on an environment
+// it would never measure — and the same blind spot could as easily have
+// produced a false PASS.
+func TestDialIsolatesLeanproxyStateWithoutMovingTheRealHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary; skipped in -short")
+	}
+
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot determine real home dir: %v", err)
+	}
+
+	c, err := Dial(buildMockMCP(t))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	env := map[string]string{}
+	for _, kv := range c.cmd.Env {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			env[kv[:i]] = kv[i+1:]
+		}
+	}
+
+	if env["HOME"] != realHome {
+		t.Fatalf("Dial moved HOME to %q; upstream servers must see the operator's real home %q",
+			env["HOME"], realHome)
+	}
+	state := env[cachefile.HomeEnv]
+	if state == "" {
+		t.Fatalf("Dial set no %s; LeanProxy's own state would land in the operator's config root", cachefile.HomeEnv)
+	}
+	if state == realHome {
+		t.Fatalf("%s points at the real home %q; it must be a private directory", cachefile.HomeEnv, state)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("stat %s=%q: %v", cachefile.HomeEnv, state, err)
 	}
 }

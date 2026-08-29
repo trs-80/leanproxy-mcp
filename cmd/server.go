@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
 	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
 	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
@@ -943,14 +944,14 @@ func applyServerToolConfig(handler *mcp.Handler, cfg *migrate.Config) {
 		}
 	}
 	if adaptive {
-		// os.UserHomeDir ($HOME), not user.Current (the passwd entry) — the
-		// same convention internal/cachefile.Dir and pkg/statusfile already
-		// use, and for the same reason: a subprocess given an isolated HOME
-		// (the e2e harness spawns the proxy hundreds of times per sweep) must
-		// keep its state inside that HOME instead of depositing it in the
-		// operator's real config root. This is the file adaptive stubs read
-		// and write, so it was the one remaining path that could escape.
-		if home, err := os.UserHomeDir(); err == nil {
+		// cachefile.HomeDir ($LEANPROXY_HOME, else $HOME) — the same
+		// convention internal/cachefile.Dir and pkg/statusfile use, and for
+		// the same reason: a proxy the e2e harness spawns hundreds of times
+		// per sweep must keep its state inside the harness's private root
+		// instead of depositing it in the operator's real config root. This
+		// is the file adaptive stubs read and write, so it was the one
+		// remaining path that could escape.
+		if home, err := cachefile.HomeDir(); err == nil {
 			handler.EnableUsageTracking(filepath.Join(home, ".config", "leanproxy", "toolusage.json"))
 		} else {
 			slog.Warn("adaptive stubs disabled: cannot resolve home dir for usage file", "error", err)

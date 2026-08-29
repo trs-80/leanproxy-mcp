@@ -71,6 +71,11 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_TASKS = os.path.join(_REPO_ROOT, "tests", "bench", "e2e", "fixtures", "tasks.json")
 DEFAULT_BALLAST_FIXTURE = os.path.join(_REPO_ROOT, "tests", "bench", "e2e", "fixtures", "ballast.json")
 
+# Mirrors internal/cachefile.HomeEnv: the root LeanProxy keeps its own state
+# under. Isolating that instead of HOME is what lets the preflight spawn real
+# upstream servers in the environment they will actually run in.
+LEANPROXY_HOME_ENV = "LEANPROXY_HOME"
+
 ARMS = ("native", "router", "lazy")
 PROXY_ARMS = ("router", "lazy")
 
@@ -716,15 +721,21 @@ class McpStdio:
     starts but never answers times out instead of hanging the preflight
     forever — a preflight that can hang is a preflight operators skip.
 
-    HOME (and USERPROFILE, for Windows) are pointed at a private, per-instance
-    temp directory instead of the operator's real one, mirroring
-    tests/bench/e2e/client.go's Dial. Without this, every preflight spawn of
-    leanproxy-mcp — including on a path where the preflight goes on to REFUSE
-    the configuration — writes ballast tool caches into the operator's real
-    ~/.config/leanproxy/toolcache and rewrites the live daemon's
-    ~/.config/leanproxy/status/current.json (internal/cachefile.Dir and
-    pkg/statusfile resolve both via os.UserHomeDir, i.e. $HOME). See
-    TestPreflightIsolatesHomeDirectory.
+    LEANPROXY_HOME points at a private, per-instance temp directory,
+    mirroring tests/bench/e2e/client.go's Dial. Without it, every preflight
+    spawn of leanproxy-mcp — including on a path where the preflight goes on
+    to REFUSE the configuration — writes ballast tool caches into the
+    operator's real ~/.config/leanproxy/toolcache and rewrites the live
+    daemon's ~/.config/leanproxy/status/current.json.
+
+    HOME is deliberately left alone. It used to be the isolation lever, but
+    every upstream MCP server the proxy spawns inherits this environment, so
+    the harness was relocating the home of servers it does not own.
+    codebase-memory-mcp derives its cache directory from HOME and refuses to
+    start when that disagrees with its running daemon, so the preflight
+    reported all three arms unable to reach any expected tool and refused a
+    configuration whose live sweep — which Bob runs under the real HOME —
+    would have worked. See TestPreflightSpawnEnvironment.
     """
 
     def __init__(self, command: str, args: list, cwd: str = None, timeout: float = 60.0):
@@ -742,8 +753,7 @@ class McpStdio:
         self._home_dir = tempfile.mkdtemp(prefix="leanproxy-ab-home-")
         try:
             env = dict(os.environ)
-            env["HOME"] = self._home_dir
-            env["USERPROFILE"] = self._home_dir
+            env[LEANPROXY_HOME_ENV] = self._home_dir
             self.proc = subprocess.Popen(
                 [self.command] + self.args,
                 cwd=self.cwd,

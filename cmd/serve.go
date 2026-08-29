@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
 	"github.com/mmornati/leanproxy-mcp/pkg/bouncer/injection"
 	"github.com/mmornati/leanproxy-mcp/pkg/cache"
@@ -181,10 +182,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	configPath := GlobalConfigPath
 	if configPath == "" {
-		// os.UserHomeDir ($HOME), matching internal/cachefile.Dir and
-		// pkg/statusfile: a proxy started with an isolated HOME must resolve
-		// its default config inside that HOME, not from the passwd entry.
-		if home, err := os.UserHomeDir(); err == nil {
+		// cachefile.HomeDir ($LEANPROXY_HOME, else $HOME), matching
+		// internal/cachefile.Dir and pkg/statusfile: a proxy pointed at a
+		// private state root must resolve its default config inside that
+		// root, not read the operator's real one.
+		if home, err := cachefile.HomeDir(); err == nil {
 			configPath = filepath.Join(home, ".config", "leanproxy_servers.yaml")
 		}
 	}

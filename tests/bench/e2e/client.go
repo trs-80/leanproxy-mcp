@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
 )
 
 // Client is a minimal stdio JSON-RPC MCP client. It speaks just enough of the
@@ -20,18 +22,22 @@ type Client struct {
 	in      io.WriteCloser
 	out     *bufio.Reader
 	next    int
-	homeDir string // isolated HOME for cmd; removed in Close
+	homeDir string // private LEANPROXY_HOME for cmd; removed in Close
 }
 
-// Dial starts bin with args and attaches to its stdin/stdout. The subprocess's
-// HOME (and USERPROFILE, for Windows) point at a private, per-Dial temp
-// directory instead of the operator's real one. Without this, a real run of
+// Dial starts bin with args and attaches to its stdin/stdout. The subprocess
+// gets a private LEANPROXY_HOME — a per-Dial temp directory holding
+// everything LeanProxy writes for itself. Without it, a real run of
 // `go test ./tests/bench/e2e/` against the leanproxy-mcp binary wrote
 // ballast0.json/ballast1.json into the operator's actual
-// ~/.config/leanproxy/toolcache — internal/cachefile.Dir resolves the cache
-// root via os.UserHomeDir, i.e. $HOME, and Dial never set cmd.Env. Task 4
-// spawns the proxy hundreds of times across a sweep, so every spawn must be
-// contained. See TestDialIsolatesHomeDirectory.
+// ~/.config/leanproxy/toolcache, and Task 4 spawns the proxy hundreds of
+// times across a sweep. See TestDialIsolatesHomeDirectory.
+//
+// HOME is deliberately left alone. It used to be the isolation lever, but
+// every upstream MCP server the proxy spawns inherits it, so the harness was
+// also relocating the home of servers it does not own — and a stateful
+// upstream then behaves differently under measurement than in production.
+// See TestDialIsolatesLeanproxyStateWithoutMovingTheRealHome.
 func Dial(bin string, args ...string) (*Client, error) {
 	home, err := os.MkdirTemp("", "leanproxy-e2e-home-*")
 	if err != nil {
@@ -39,7 +45,7 @@ func Dial(bin string, args ...string) (*Client, error) {
 	}
 
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home)
+	cmd.Env = append(os.Environ(), cachefile.HomeEnv+"="+home)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

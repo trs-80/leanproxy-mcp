@@ -49,11 +49,35 @@ const tempMaxAge = time.Hour
 // instance. Both callers downgrade that failure to a warning and fall back to
 // a no-op cache, so the process would silently stop caching entirely.
 func Dir(sub string) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := HomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get user home dir: %w", err)
 	}
 	return DirUnder(home, sub)
+}
+
+// HomeEnv overrides the directory LeanProxy keeps its own per-user state
+// under: the cache root, the status file, the tool-usage record, the
+// distilled cache. Everything LeanProxy writes for itself, and nothing else.
+const HomeEnv = "LEANPROXY_HOME"
+
+// HomeDir returns the root LeanProxy keeps its own state under: HomeEnv when
+// set, the user's home otherwise.
+//
+// This exists because the alternative — overriding HOME — cannot be contained.
+// Every MCP server LeanProxy spawns inherits its environment, so a harness
+// that isolated LeanProxy by pointing HOME at a temp directory also moved the
+// home of every upstream. A stateful upstream then behaves differently under
+// measurement than in production: codebase-memory-mcp derives its cache
+// directory from HOME and refuses to start when that disagrees with its
+// already-running daemon, so the e2e preflight rejected a configuration whose
+// live sweep would have run fine. An override scoped to LeanProxy's own state
+// isolates what the harness needs to isolate and lies to nobody else.
+func HomeDir() (string, error) {
+	if v := os.Getenv(HomeEnv); v != "" {
+		return v, nil
+	}
+	return os.UserHomeDir()
 }
 
 // DirUnder is Dir with an explicit home directory, so tests can exercise the
