@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 func TestMarketplaceSearchCmd_Registered(t *testing.T) {

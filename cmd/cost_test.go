@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 func TestCostCmd_Flags(t *testing.T) {

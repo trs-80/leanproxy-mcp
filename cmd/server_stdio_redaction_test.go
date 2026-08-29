@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
 )
 
 // fakeMCPHandler records what the handler saw and returns a canned response.

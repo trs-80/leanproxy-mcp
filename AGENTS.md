@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository.
 
 ## What this is
 
-LeanProxy-MCP is a Go CLI (`leanproxy-mcp`) that sits between an AI coding agent and its MCP servers, aggregating them behind one endpoint and cutting token usage (tool-manifest stubbing, response truncation, caching). Module path: `github.com/mmornati/leanproxy-mcp` (this repo is the `trs-80` fork; `main` is the working branch).
+LeanProxy-MCP is a Go CLI (`leanproxy-mcp`) that sits between an AI coding agent and its MCP servers, aggregating them behind one endpoint and cutting token usage (tool-manifest stubbing, response truncation, caching). Module path: `github.com/trs-80/leanproxy-mcp-bob` (this repo is the `trs-80` fork; `main` is the working branch).
 
 ## Commands
 

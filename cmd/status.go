@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
-	"github.com/mmornati/leanproxy-mcp/pkg/statusfile"
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/statusfile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 var statusCmd = &cobra.Command{

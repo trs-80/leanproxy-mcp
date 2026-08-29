@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
 )
 
 type Cache interface {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 func waitForServer(addr string) bool {

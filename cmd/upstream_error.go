@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
 )
 
 // upstreamErrorMessage is the fixed, client-facing text used whenever a

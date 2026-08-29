@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
-	errs "github.com/mmornati/leanproxy-mcp/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
+	errs "github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
 )
 
 const (

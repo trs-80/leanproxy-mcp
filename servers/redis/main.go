@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/redistools"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/redistools"
 )
 
 const serverName = "leanproxy-mcp-redis"

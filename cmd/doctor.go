@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer/injection"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer/injection"
 )
 
 var doctorCmd = &cobra.Command{

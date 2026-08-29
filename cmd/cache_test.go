@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/cache"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache"
 )
 
 func resetCacheStatsFlags(t *testing.T) {

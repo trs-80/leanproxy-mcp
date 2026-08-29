@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/statusfile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/statusfile"
 )
 
 func TestSaveConfig(t *testing.T) {

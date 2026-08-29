@@ -7,9 +7,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
-	"github.com/mmornati/leanproxy-mcp/internal/netguard"
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/netguard"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 type Config struct {

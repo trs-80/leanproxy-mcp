@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
 type mockPool struct {

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 func TestAddRegistryCmd_Registered(t *testing.T) {

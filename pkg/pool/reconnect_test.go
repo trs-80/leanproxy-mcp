@@ -9,8 +9,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 // startMCPTestHTTPServer serves handler on 127.0.0.1 (a fresh port when addr

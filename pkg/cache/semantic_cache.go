@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/cache/vectordb"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache/vectordb"
 )
 
 const (

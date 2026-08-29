@@ -16,7 +16,7 @@ import (
 func buildLeanproxy(t testing.TB) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "leanproxy-mcp")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/mmornati/leanproxy-mcp")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/trs-80/leanproxy-mcp-bob")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("build leanproxy: %v", err)

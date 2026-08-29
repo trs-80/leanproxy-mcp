@@ -16,7 +16,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mmornati/leanproxy-mcp/tests/bench/mockmcp"
+	"github.com/trs-80/leanproxy-mcp-bob/tests/bench/mockmcp"
 )
 
 func main() {

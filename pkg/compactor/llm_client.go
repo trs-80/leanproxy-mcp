@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/internal/netguard"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/netguard"
 )
 
 type LLMClient interface {

@@ -6,13 +6,13 @@
 
 **Architecture:** Two independent layers. Layer 1 is a Go test that starts the real proxy over stdio against synthetic ballast servers and captures the exact `tools/list` bytes each arm delivers — deterministic, free, CI-safe. Layer 2 is a Python script that drives real Bob sessions through each arm and reads ground-truth token counts back out of Bob's SQLite store — coin-spending, env-gated. Layer 3 is a reporting step that combines them without silently interpolating.
 
-**Tech Stack:** Go 1.25.5 (`github.com/mmornati/leanproxy-mcp`), Python 3.9+ stdlib only, SQLite, existing `tests/bench/mockmcp` and `pkg/reporter`.
+**Tech Stack:** Go 1.25.5 (`github.com/trs-80/leanproxy-mcp-bob`), Python 3.9+ stdlib only, SQLite, existing `tests/bench/mockmcp` and `pkg/reporter`.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-e2e-ab-harness-design.md`
 
 ## Global Constraints
 
-- Go module is `github.com/mmornati/leanproxy-mcp`; Go 1.25.5.
+- Go module is `github.com/trs-80/leanproxy-mcp-bob`; Go 1.25.5.
 - Python is stdlib-only, 3.9+ compatible — matches the `scripts/bobstat.py` convention. No pip dependencies.
 - All tokenisation goes through `reporter.NewEstimator()` (`pkg/reporter/cost.go:82`). Never hand-roll a token count; the runtime cost tracker uses this primitive and the numbers must not diverge from `leanproxy-mcp savings`.
 - `Estimator.EstimateTokens(content string) int` returns `ceil(len(content) / 4)`. `DefaultCharsPerToken = 4`.
@@ -91,7 +91,7 @@ import (
 func buildMockMCP(t testing.TB) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "mockmcp")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/mmornati/leanproxy-mcp/tests/bench/mockmcp/cmd")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/trs-80/leanproxy-mcp-bob/tests/bench/mockmcp/cmd")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("build mockmcp: %v", err)
@@ -453,7 +453,7 @@ import (
 func buildLeanproxy(t testing.TB) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "leanproxy-mcp")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/mmornati/leanproxy-mcp")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/trs-80/leanproxy-mcp-bob")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("build leanproxy: %v", err)
@@ -765,7 +765,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 // ballastPoints is the sweep. The production setup contributes roughly 10 real

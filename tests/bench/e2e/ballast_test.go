@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 func TestBallastSpecs(t *testing.T) {

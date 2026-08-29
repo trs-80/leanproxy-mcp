@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
-	"github.com/mmornati/leanproxy-mcp/pkg/router"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/router"
 )
 
 type Tool struct {

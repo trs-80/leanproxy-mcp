@@ -19,9 +19,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/mmornati/leanproxy-mcp/internal/version.Version={{.Version}}
-      - -X github.com/mmornati/leanproxy-mcp/internal/version.Commit={{.Commit}}
-      - -X github.com/mmornati/leanproxy-mcp/internal/version.BuildTime={{.Date}}
+      - -X github.com/trs-80/leanproxy-mcp-bob/internal/version.Version={{.Version}}
+      - -X github.com/trs-80/leanproxy-mcp-bob/internal/version.Commit={{.Commit}}
+      - -X github.com/trs-80/leanproxy-mcp-bob/internal/version.BuildTime={{.Date}}
 # Developer ID signing + Apple notarization for the darwin binaries is NOT
 # enabled. Without it, macOS quarantines browser-downloaded binaries and
 # Gatekeeper refuses them with "cannot be opened, could not scan for malware";

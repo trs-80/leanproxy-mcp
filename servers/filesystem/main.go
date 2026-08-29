@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/filesystemtools"
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/filesystemtools"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
 )
 
 const serverName = "leanproxy-mcp-filesystem"

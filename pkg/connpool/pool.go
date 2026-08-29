@@ -13,7 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 type PoolConfig struct {

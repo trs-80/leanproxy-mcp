@@ -12,7 +12,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
 )
 
 // Client is a minimal stdio JSON-RPC MCP client. It speaks just enough of the

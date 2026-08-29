@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 func TestNamespaceCmd_HelpOutput(t *testing.T) {

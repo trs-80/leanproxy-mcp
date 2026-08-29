@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
 )
 
 type StatusDisplay struct {

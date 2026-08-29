@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer/injection"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer/injection"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
 )
 
 func setInjectionGlobals(t *testing.T, d *injection.Dispatcher) {

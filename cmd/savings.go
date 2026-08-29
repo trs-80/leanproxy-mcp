@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 var savingsCmd = &cobra.Command{

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
 // ToolCache is the in-memory per-server tool list, populated from the

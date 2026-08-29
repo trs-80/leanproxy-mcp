@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
-	"github.com/mmornati/leanproxy-mcp/pkg/router"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/router"
 )
 
 func (g *gatewayTools) ListServers(ctx context.Context) ([]ServerInfo, error) {

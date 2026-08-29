@@ -8,14 +8,14 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
 )
 
 // buildMockMCP compiles the standalone mock MCP server and returns its path.
 func buildMockMCP(t testing.TB) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "mockmcp")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/mmornati/leanproxy-mcp/tests/bench/mockmcp/cmd")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/trs-80/leanproxy-mcp-bob/tests/bench/mockmcp/cmd")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("build mockmcp: %v", err)

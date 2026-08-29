@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 type Backend string

@@ -9,9 +9,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer/injection"
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer/injection"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 type CacheSettings struct {

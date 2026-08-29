@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
 )
 
 func TestStatusDisplay_RenderTable_Empty(t *testing.T) {

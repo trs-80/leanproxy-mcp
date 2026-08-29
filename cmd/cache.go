@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/cache"
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
 var cacheCmd = &cobra.Command{

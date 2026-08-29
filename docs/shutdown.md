@@ -233,8 +233,8 @@ import (
     "syscall"
     "time"
 
-    "github.com/mmornati/leanproxy-mcp/pkg/concurrent"
-    "github.com/mmornati/leanproxy-mcp/pkg/pool"
+    "github.com/trs-80/leanproxy-mcp-bob/pkg/concurrent"
+    "github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
 )
 
 type Application struct {

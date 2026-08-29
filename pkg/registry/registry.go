@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 type TransportType = migrate.TransportType

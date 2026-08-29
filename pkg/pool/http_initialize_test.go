@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 // fakeStreamableMCP is a minimal streamable-HTTP MCP endpoint: it answers the

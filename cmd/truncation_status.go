@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/statusfile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/statusfile"
 )
 
 // pushTruncationStatus copies the handler's truncation counters into the

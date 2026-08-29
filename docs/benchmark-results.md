@@ -1,7 +1,7 @@
 # Benchmark Results
 
 This document is the **single source of truth** for the token-economy and
-NFR performance numbers in the [README](https://github.com/mmornati/leanproxy-mcp/blob/main/README.md) and
+NFR performance numbers in the [README](https://github.com/trs-80/leanproxy-mcp-bob/blob/main/README.md) and
 [index.md](./index.md). Every number below is produced by an executable
 test in `tests/bench/token_economy_bench_test.go` and re-validated by
 `make bench`. No number here is hand-edited.
@@ -48,7 +48,7 @@ All token accounting in the benchmark suite uses the **same primitive**
 the runtime cost tracker uses:
 
 ```go
-import "github.com/mmornati/leanproxy-mcp/pkg/reporter"
+import "github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 
 estimator := reporter.NewEstimator()        // 1 token ≈ 4 chars (chars/4)
 tokens := estimator.EstimateTokens(payload)  // or EstimateJSON(v)
@@ -139,7 +139,7 @@ For comparison:
 ```
 goos: darwin
 goarch: arm64
-pkg: github.com/mmornati/leanproxy-mcp/tests/bench
+pkg: github.com/trs-80/leanproxy-mcp-bob/tests/bench
 cpu: Apple M4
 ```
 
