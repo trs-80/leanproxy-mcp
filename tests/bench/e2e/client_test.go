@@ -132,14 +132,31 @@ func snapshotStatusFile(path string) statSnapshot {
 // CRITICAL-1's actual shape is CREATE-then-DELETE: the buggy store creates
 // its own file at the real path, then deletes it on shutdown. On a machine
 // with no pre-existing status file — every CI runner, and any developer
-// machine with no live leanproxy daemon — before.exists and after.exists are
-// both false regardless of whether the fix is in place, so a bare
-// before/after existence-and-inode check never exercises the delete branch
-// and passes vacuously. To make this a real guard everywhere, plant a
-// sentinel file first whenever nothing already exists, so there is always
-// something the bug's delete step would have to destroy.
-var sentinelStatusContent = []byte(`{"pid":-1,"sentinel":"TestSweepDoesNotTouchRealStatusFile"}`)
-
+// machine with no live leanproxy daemon — the DELETE half is not exercised
+// here, because there is nothing to delete. That gap is deliberately NOT
+// closed by planting a file: this test must never write to, create a
+// directory under, or delete anything at the real path. os.Stat is the only
+// access to the real home it is allowed to make. Planting would make the
+// guard participate in the very race it exists to detect, would leave a
+// lying `{"pid":-1}` status file behind on an interrupted run (which
+// `leanproxy status` would then report forever), and would collide with
+// tests/e2e, which spawns the real binary without LEANPROXY_HOME and so
+// creates and removes this same real current.json concurrently.
+//
+// The delete branch is instead covered deterministically and
+// non-destructively, entirely inside a temp dir, by
+// pkg/statusfile.TestStatusStoreHonorsLeanproxyHomeOverride
+// (pkg/statusfile/file_test.go:563), which fails outright under the original
+// user.Current().HomeDir implementation.
+//
+// Watching the real path is a backstop, not the detector. Measured: with the
+// bug reinstated, a sweep creates the real current.json and each proxy's exit
+// takes it away again, so a before/after pair straddling the whole sweep sees
+// exists=false both times and this test passes while the bug fires. The
+// detector is TestSpawnedProxyWritesItsStatusFileUnderTheIsolatedHome below,
+// which asserts the positive half of the contract — LeanProxy's state lands in
+// the isolated home — and therefore fails the moment a proxy resolves its
+// state root anywhere else.
 func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds two binaries; skipped in -short")
@@ -152,22 +169,9 @@ func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 	statusDir := filepath.Join(realHome, ".config", "leanproxy", "status")
 	statusFile := filepath.Join(statusDir, "current.json")
 
+	// Read-only: stat and nothing else. See the doc comment above — planting
+	// here would write into the operator's real config root.
 	before := snapshotStatusFile(statusFile)
-	sentinelPlanted := false
-	if !before.exists {
-		if err := os.MkdirAll(statusDir, 0700); err != nil {
-			t.Fatalf("prepare status dir %s: %v", statusDir, err)
-		}
-		if err := os.WriteFile(statusFile, sentinelStatusContent, 0600); err != nil {
-			t.Fatalf("plant sentinel status file %s: %v", statusFile, err)
-		}
-		t.Cleanup(func() { os.Remove(statusFile) })
-		sentinelPlanted = true
-		before = snapshotStatusFile(statusFile)
-		if !before.exists {
-			t.Fatalf("planted sentinel status file %s but it does not exist immediately after writing it", statusFile)
-		}
-	}
 
 	mock := buildMockMCP(t)
 	lp := buildLeanproxy(t)
@@ -184,27 +188,59 @@ func TestSweepDoesNotTouchRealStatusFile(t *testing.T) {
 	}
 
 	after := snapshotStatusFile(statusFile)
-	if !after.exists {
+	if before.exists && !after.exists {
 		t.Fatalf("sweep deleted the real status file %s", statusFile)
 	}
-	if before.ino != 0 && before.ino != after.ino {
+	if before.exists && before.ino != 0 && before.ino != after.ino {
 		t.Fatalf("sweep replaced the real status file %s: inode changed %d -> %d (deleted and recreated)",
 			statusFile, before.ino, after.ino)
 	}
-	if sentinelPlanted {
-		// Nothing legitimate could have rewritten a file under this test's
-		// own sentinel name in the seconds this test ran — unlike the
-		// inode-only check above, which must tolerate a live daemon
-		// periodically rewriting ITS OWN pre-existing file in place, a
-		// planted sentinel can be checked for byte-identical content too.
-		got, err := os.ReadFile(statusFile)
-		if err != nil {
-			t.Fatalf("read status file after sweep: %v", err)
-		}
-		if string(got) != string(sentinelStatusContent) {
-			t.Fatalf("sweep modified the planted sentinel status file %s: got %q, want %q",
-				statusFile, got, sentinelStatusContent)
-		}
+	if !before.exists && after.exists {
+		t.Fatalf("sweep created a status file at the real path %s; LeanProxy state must stay under %s",
+			statusFile, cachefile.HomeEnv)
+	}
+}
+
+// TestSpawnedProxyWritesItsStatusFileUnderTheIsolatedHome is the detector the
+// real-path watch above cannot be. It asserts where LeanProxy's state DOES
+// land rather than where it does not, so it fails deterministically — no
+// polling, no timing window, no dependence on what the operator's home
+// happens to contain.
+//
+// cmd/server.go builds its status store during startup (NewFileStatusStore
+// then updateStdioServerStatusOnce) before it serves a single request, so a
+// completed initialize handshake is proof the file has already been written.
+// Reinstating the bug — resolving the store's root with os.UserHomeDir or
+// user.Current().HomeDir instead of cachefile.HomeDir, which ignores
+// LEANPROXY_HOME — leaves the isolated home empty and fails this test.
+func TestSpawnedProxyWritesItsStatusFileUnderTheIsolatedHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds two binaries; skipped in -short")
+	}
+
+	mock := buildMockMCP(t)
+	lp := buildLeanproxy(t)
+
+	cfg, err := WriteConfig(t.TempDir(), BallastSpecs(mock, 1, 2))
+	if err != nil {
+		t.Fatalf("write proxy config: %v", err)
+	}
+
+	c, err := Dial(lp, "server", "run", "--stdio", "--config", cfg)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Initialize(); err != nil {
+		t.Fatalf("initialize proxy: %v", err)
+	}
+
+	statusFile := filepath.Join(c.StateDir(), ".config", "leanproxy", "status", "current.json")
+	if _, err := os.Stat(statusFile); err != nil {
+		t.Fatalf("proxy did not write its status file under the isolated %s=%s: stat %s: %v\n"+
+			"LeanProxy resolved its state root somewhere else — which means it wrote into the operator's real home",
+			cachefile.HomeEnv, c.StateDir(), statusFile, err)
 	}
 }
 

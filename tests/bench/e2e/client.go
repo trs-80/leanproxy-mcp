@@ -64,6 +64,15 @@ func Dial(bin string, args ...string) (*Client, error) {
 	return &Client{cmd: cmd, in: stdin, out: bufio.NewReaderSize(stdout, 1<<20), next: 1, homeDir: home}, nil
 }
 
+// StateDir is the private LEANPROXY_HOME this client's subprocess was given.
+// Exposed so a test can assert the POSITIVE half of the isolation contract —
+// that LeanProxy's own state actually lands here — which is the only check
+// that fails deterministically when the subprocess ignores LEANPROXY_HOME.
+// Watching the real home for the absence of a file cannot do that: the buggy
+// store creates its file and removes it again, so a before/after comparison
+// straddling the sweep sees nothing either way. Valid only until Close.
+func (c *Client) StateDir() string { return c.homeDir }
+
 // call sends one JSON-RPC request and returns the raw `result` bytes.
 func (c *Client) call(method string, params any) (json.RawMessage, error) {
 	id := c.next
