@@ -244,6 +244,13 @@ func TestSpawnAliveCheck(t *testing.T) {
 // so a per-server TimeoutValue is honored even when the caller passes a
 // smaller value. Before the fix, the caller value (often a stale global
 // 30s) won unconditionally, silently downgrading the per-server timeout.
+//
+// The deadline sendRequest actually armed is observed through the timeout
+// error, which reports it verbatim ("pool: request timeout after %v"). The
+// upstream is `sleep`, which never answers, so the timer arm is the only
+// reachable outcome and the reported duration is the value under test.
+// Durations are sub-second so the four cases stay fast; the assertion is on
+// the reported value, not on wall-clock timing, so it is not flaky.
 func TestSendRequestTimeout_MinOfServerAndCaller(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -251,35 +258,42 @@ func TestSendRequestTimeout_MinOfServerAndCaller(t *testing.T) {
 		callerTimeout   time.Duration
 		expectedTimeout time.Duration
 	}{
-		{"server-only (req.Timeout=0) wins", 60 * time.Second, 0, 60 * time.Second},
-		{"caller smaller wins", 60 * time.Second, 30 * time.Second, 30 * time.Second},
-		{"server smaller wins", 30 * time.Second, 60 * time.Second, 30 * time.Second},
-		{"equal values", 45 * time.Second, 45 * time.Second, 45 * time.Second},
+		{"server-only (req.Timeout=0) wins", 300 * time.Millisecond, 0, 300 * time.Millisecond},
+		{"caller smaller wins", 300 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond},
+		{"server smaller wins", 100 * time.Millisecond, 300 * time.Millisecond, 100 * time.Millisecond},
+		{"equal values", 200 * time.Millisecond, 200 * time.Millisecond, 200 * time.Millisecond},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newServerV2("test", StdioServerConfig{
 				Name:           "test",
-				Command:        "sh",
-				Args:           []string{"-c", "sleep 60"},
+				Command:        "sleep",
+				Args:           []string{"30"},
 				RequestTimeout: tc.serverTimeout,
 			}, slog.Default())
 			server.requestTimeout = tc.serverTimeout
 
-			// Capture the timeout the worker actually applies by wrapping
-			// sendRequest indirectly via a short-circuit: we instrument
-			// responseCh to assert the wait duration matches expectations.
-			// Since we cannot easily intercept the timer without spawning
-			// the process, we drive the selection logic directly by reading
-			// the exact lines from sendRequest (mirrors the field logic in
-			// server.go:sendRequest) to lock the contract.
-			want := tc.serverTimeout
-			if tc.callerTimeout > 0 && tc.callerTimeout < want {
-				want = tc.callerTimeout
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if err := server.spawn(ctx); err != nil {
+				t.Fatalf("spawn failed: %v", err)
 			}
-			if want != tc.expectedTimeout {
-				t.Fatalf("selection logic mismatch: want=%v expected=%v", want, tc.expectedTimeout)
+			t.Cleanup(func() { server.stop() })
+
+			_, err := server.sendRequest(ctx, Request{
+				Method:  "test",
+				ID:      1,
+				Timeout: tc.callerTimeout,
+			}, make(chan struct{}))
+
+			if err == nil {
+				t.Fatalf("sendRequest(serverTimeout=%v, callerTimeout=%v): expected a timeout error, got nil", tc.serverTimeout, tc.callerTimeout)
+			}
+			wantMsg := "request timeout after " + tc.expectedTimeout.String()
+			if !strings.Contains(err.Error(), wantMsg) {
+				t.Fatalf("sendRequest(serverTimeout=%v, callerTimeout=%v) armed the wrong deadline: error %q does not contain %q", tc.serverTimeout, tc.callerTimeout, err.Error(), wantMsg)
 			}
 		})
 	}

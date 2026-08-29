@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
 )
 
 func TestFileCacheBasic(t *testing.T) {
@@ -131,10 +132,21 @@ func TestNoOpCache(t *testing.T) {
 	assert.Equal(t, "", cache.GetCacheDir())
 }
 
-func TestNewFileCache(t *testing.T) {
+// NewFileCache resolves its directory through cachefile.HomeDir, so it must
+// follow the LEANPROXY_HOME override rather than the operator's real home.
+// Without the override this test MkdirAll'd (and SweepTemp'd) the real
+// ~/.config/leanproxy/toolcache — the same leak guarded by
+// e2e.TestDialIsolatesHomeDirectory and statusfile.TestStatusStoreHonorsLeanproxyHomeOverride.
+func TestNewFileCacheResolvesCacheDirUnderLeanproxyHome(t *testing.T) {
+	override := t.TempDir()
+	t.Setenv(cachefile.HomeEnv, override)
+
 	fc, err := NewFileCache(nil)
 	require.NoError(t, err)
-	assert.NotEmpty(t, fc.GetCacheDir())
+
+	want := filepath.Join(override, cachefile.Root, "toolcache")
+	assert.Equal(t, want, fc.GetCacheDir(), "cache dir must resolve under LEANPROXY_HOME=%s", override)
+	assert.DirExists(t, want, "Dir must create the toolcache directory it returns")
 }
 
 func TestGetCacheDir(t *testing.T) {

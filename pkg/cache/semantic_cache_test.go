@@ -34,17 +34,18 @@ func (m *mockVectorStore) Upsert(_ context.Context, records ...vectordb.VectorRe
 	return nil
 }
 
-// Search honors the Store contract: results sorted by score descending and
-// limited to k.
+// Search honors the Store contract: every record scored, results sorted by
+// score descending and limited to k. It deliberately does NOT filter by
+// SemanticSimilarityThreshold — that is the cache's policy, applied in
+// SemanticCache.Get. Filtering here would hide the production guard and let
+// the threshold tests pass even if that guard were deleted.
 func (m *mockVectorStore) Search(_ context.Context, vector []float32, k int) ([]vectordb.SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var results []vectordb.SearchResult
 	for _, rec := range m.records {
 		sim := cosineSim(vector, rec.Vector)
-		if sim >= SemanticSimilarityThreshold {
-			results = append(results, vectordb.SearchResult{Record: rec, Score: sim})
-		}
+		results = append(results, vectordb.SearchResult{Record: rec, Score: sim})
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 	if k > 0 && len(results) > k {
@@ -309,6 +310,41 @@ func TestSemanticCache_SemanticMissLowSimilarity(t *testing.T) {
 	}
 	if result.HitType != HitMiss {
 		t.Errorf("HitType = %v, want HitMiss for low similarity", result.HitType)
+	}
+}
+
+// unitVecAt returns a unit vector whose cosine similarity with
+// {1,0,0,0} is exactly cos.
+func unitVecAt(cos float64) []float32 {
+	return []float32{float32(cos), float32(math.Sqrt(1 - cos*cos)), 0, 0}
+}
+
+func TestSemanticCache_SemanticThresholdBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sim  float64
+		want HitType
+	}{
+		{"just below threshold", SemanticSimilarityThreshold - 0.01, HitMiss},
+		{"just above threshold", SemanticSimilarityThreshold + 0.01, HitSemantic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := newMockVectorStore()
+			sc := NewSemanticCache(mock, nil, time.Hour)
+			ctx := context.Background()
+
+			if err := sc.Set(ctx, "stored prompt", json.RawMessage(`{"r":1}`), "tool", []float32{1, 0, 0, 0}); err != nil {
+				t.Fatalf("Set failed: %v", err)
+			}
+
+			result, err := sc.Get(ctx, "probe prompt", "tool", unitVecAt(tc.sim))
+			if err != nil {
+				t.Fatalf("Get failed: %v", err)
+			}
+			if result.HitType != tc.want {
+				t.Errorf("HitType = %v, want %v (similarity=%.4f)", result.HitType, tc.want, result.Similarity)
+			}
+		})
 	}
 }
 

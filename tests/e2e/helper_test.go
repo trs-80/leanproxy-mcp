@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
 )
 
 // helper.go — utilities shared across story-specific *_test.go files.
@@ -36,19 +38,11 @@ servers:
 	return path
 }
 
-// freePort asks the OS for a free TCP port. Only suitable for negative tests
-// that probe a port nothing should be listening on; positive tests must bind
-// ":0" and recover the real address via boundAddr, because a port returned
-// here can be re-taken by anyone between Close and the server's bind.
-func freePort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to allocate port: %v", err)
-	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
-}
+// freePort used to hand negative tests a port to probe, but a port nothing was
+// ever asked to bind is unlistening no matter what the code under test does, so
+// every assertion built on it was vacuous — and the allocate-close-rebind window
+// let an unrelated process turn it red. Its two callers now assert the disable
+// path from the startup log instead (requireLogLine), so the helper is gone.
 
 // writeFile is a tiny helper to materialize arbitrary files in a temp dir.
 func writeFile(t *testing.T, path, content string) {
@@ -79,7 +73,33 @@ func startServe(t *testing.T, args []string, pidFile, logFile string) error {
 	cmd.Stdout = logFh
 	cmd.Stderr = logFh
 	cmd.Dir = wd
-	cmd.Env = append(os.Environ(), "LEANPROXY_CONFIG="+findFirstArg(args, "--config"))
+	// Every serve process gets a private state root. Without LEANPROXY_HOME the
+	// child resolves cachefile.HomeDir() to the operator's real home and will
+	// create, rewrite and — via statusStore.RemoveFile() on the SIGINT path in
+	// cmd/serve.go, which stopServe takes — DELETE the operator's live
+	// ~/.config/leanproxy/status/current.json, plus
+	// ~/.config/leanproxy/toolusage.json. That is a create-then-delete of real
+	// user state from a test, and it races the guard in tests/bench/e2e
+	// (TestSweepDoesNotTouchRealStatusFile) when `go test` runs the two
+	// packages in parallel.
+	//
+	// HOME has to move as well: pkg/cache.DefaultSemanticStatsPath and
+	// pkg/registry.LeanProxyDir resolve ~/.leanproxy through os.UserHomeDir and
+	// ignore LEANPROXY_HOME, so a serve process was rewriting the operator's
+	// real ~/.leanproxy/cache/semantic-stats.json on every run.
+	//
+	// cachefile.HomeDir's doc comment warns that moving HOME cannot be
+	// contained in general — every upstream MCP server the proxy spawns
+	// inherits it, and a stateful upstream then behaves differently under test
+	// than in production. That warning does not bite here: every serve fixture
+	// in this package declares `servers: []`, so no upstream is ever spawned.
+	// A test that adds a real upstream to a serve config must revisit this.
+	stateDir := t.TempDir()
+	cmd.Env = append(os.Environ(),
+		"LEANPROXY_CONFIG="+findFirstArg(args, "--config"),
+		cachefile.HomeEnv+"="+stateDir,
+		"HOME="+stateDir,
+	)
 
 	if err := cmd.Start(); err != nil {
 		logFh.Close()
@@ -103,7 +123,8 @@ func startServe(t *testing.T, args []string, pidFile, logFile string) error {
 // elapses before the process exits, the process is killed. Used for tests that
 // need to assert CLI flag acceptance (e.g. serve --cache-strategy=X) without
 // waiting for the serve process to start its long-running HTTP listeners.
-func runBinaryWithTimeout(args []string, timeout time.Duration) (string, string, int) {
+func runBinaryWithTimeout(t *testing.T, args []string, timeout time.Duration) (string, string, int) {
+	t.Helper()
 	wd, _ := os.Getwd()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -113,6 +134,7 @@ func runBinaryWithTimeout(args []string, timeout time.Duration) (string, string,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Dir = wd
+	cmd.Env = testEnv(t)
 
 	err := cmd.Run()
 	exitCode := 0
@@ -190,6 +212,26 @@ func boundAddr(t *testing.T, logFile, component string, timeout time.Duration) s
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s endpoint address in log:\n%s", component, logData)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// requireLogLine waits until logFile contains substr, failing with the whole
+// log if it does not appear within timeout. Use it to assert startup decisions
+// a disabled component makes: cmd/serve.go logs "<component> endpoint disabled"
+// synchronously on the ListenAndServe path, strictly before "server ready", so
+// the line is already present by the time startServeAndWait returns.
+func requireLogLine(t *testing.T, logFile, substr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		logData, _ := os.ReadFile(logFile)
+		if bytes.Contains(logData, []byte(substr)) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for %q in log:\n%s", timeout, substr, logData)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

@@ -67,16 +67,19 @@ servers: []
 func TestStory_14_1_MetricsEndpoint_DisabledByFlag(t *testing.T) {
 	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	// Wait for full startup (any enabled listener would be bound by the time
-	// "server ready" is logged), then confirm nothing answers on the port.
-	startServeAndWait(t, []string{
+	// Assert the startup decision from the log, not a probe of some unrelated
+	// port. The old test GET'd a freePort nobody was ever asked to bind, so it
+	// passed whether or not --metrics-bind=off was honoured. pkg/metrics logs
+	// "metrics endpoint disabled" on the ListenAndServe path in cmd/serve.go,
+	// which runs before "server ready" — so if the flag were ignored and a
+	// listener came up instead, this line would be absent and the test red.
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
@@ -84,10 +87,7 @@ servers: []
 		"--upstream", "http://127.0.0.1:1",
 	})
 
-	_, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
-	if err == nil {
-		t.Errorf("expected /metrics to be unreachable when --metrics-bind=off, but got a response")
-	}
+	requireLogLine(t, logFile, `msg="metrics endpoint disabled"`, 10*time.Second)
 }
 
 // Story 18-1: Web dashboard served from LeanProxy (Epic 18)
@@ -213,16 +213,23 @@ servers: []
 func TestStory_18_1_Dashboard_DisabledByFlag(t *testing.T) {
 	requireBinary(t)
 
-	port := freePort(t)
 	testDir := t.TempDir()
 	configPath := filepath.Join(testDir, "leanproxy_servers.yaml")
 	writeFile(t, configPath, `version: "1.0"
 servers: []
 `)
 
-	// Wait for full startup (any enabled listener would be bound by the time
-	// "server ready" is logged), then confirm nothing answers on the port.
-	startServeAndWait(t, []string{
+	// Same hole as the metrics twin, and worse: --dashboard-bind defaults to
+	// 127.0.0.1:9090, so an ignored "off" would have bound 9090 while the old
+	// test probed an unrelated freePort and stayed green. The log line is the
+	// honest signal — pkg/dashboard logs it synchronously before "server ready",
+	// and a real listener would emit "dashboard endpoint started" instead.
+	//
+	// A direct GET of 127.0.0.1:9090 is deliberately NOT asserted here: that is
+	// the shipped default, so any developer or CI box running a real leanproxy
+	// daemon would answer it and turn this test red for reasons unrelated to
+	// the code under test.
+	_, logFile := startServeAndWait(t, []string{
 		"--config", configPath,
 		"--listen", "127.0.0.1:0",
 		"--metrics-bind", "off",
@@ -230,11 +237,7 @@ servers: []
 		"--upstream", "http://127.0.0.1:1",
 	})
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
-	if err == nil && resp != nil {
-		resp.Body.Close()
-		t.Errorf("expected dashboard to be unreachable when --dashboard-bind=off, got %d", resp.StatusCode)
-	}
+	requireLogLine(t, logFile, `msg="dashboard endpoint disabled"`, 10*time.Second)
 }
 
 // Helper used by story 18-2 (drill-down) and 18-1 (dashboard).
