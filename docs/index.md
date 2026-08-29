@@ -46,7 +46,7 @@ When you run multiple MCP servers, each adds tool schemas to every LLM request. 
 
 For a 7-prompt mixed session where all 3 MCP servers are configured but only 2-3 actually invoked, Native MCP wastes **~16,830 tokens** on schemas never used.
 
-### Real Examples: Working Sessions (Measured v0.9.0)
+### Real Examples: Working Sessions (Measured v0.10.1)
 
 Reproduced by `tests/bench/token_economy_bench_test.go` using the same Estimator as the runtime cost tracker:
 
@@ -92,7 +92,7 @@ This means **100% cache hit doesn't mean 100% free**. A 16,830-token MCP schema 
 16,830 tokens × 0.25x = 4,208 "effective" tokens worth of money
 ```
 
-#### Real Comparison: Native MCP vs LeanProxy (Measured v0.9.0)
+#### Real Comparison: Native MCP vs LeanProxy (Measured v0.10.1)
 
 | MCP Servers | Tools | Native MCP (100% cache hit, 0.25x) | LeanProxy | Savings |
 |-------------|-------|-----------------------------------|----------|---------|
@@ -119,7 +119,7 @@ For MCP tool schemas that are **identical every request**, caching only reduces 
 
 ### Monthly Total Token Savings (100 sessions/month)
 
-Measured on v0.9.0 with 3 servers. Native MCP sends tool schemas every request (at 0.25x cache read). LeanProxy only sends the 158-token router schema.
+Measured on v0.10.1 with 3 servers. Native MCP sends tool schemas every request (at 0.25x cache read). LeanProxy only sends the 158-token router schema.
 
 | Servers | Tools | GPT-4o-mini ($0.0375/M) | Anthropic Sonnet ($0.40/M) |
 |---------|-------|--------------------------|----------------------------|

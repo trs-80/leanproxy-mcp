@@ -7,8 +7,8 @@ test in `tests/bench/token_economy_bench_test.go` and re-validated by
 `make bench`. No number here is hand-edited.
 
 > **TL;DR** — All headline claims from the README pass. Measured savings are
-> **86-99%** (depending on server shape), proxy overhead is **~12 µs/op**
-> (NFR1 wants <50 ms), and throughput is **~25,000 q/s in-process** (NFR
+> **86-99%** (depending on server shape), proxy overhead is **~1.7 µs/op**
+> (NFR1 wants <50 ms), and throughput is **~333,000 q/s in-process** (NFR
 > AC 16-3 wants ≥500 q/s). One previously-claimed number is corrected:
 > the **router payload is 158 tokens**, not the older ~110 / 27.5 — see
 > [§3 Why the router number moved](#3-why-the-router-number-moved).
@@ -164,10 +164,10 @@ cpu: Apple M4
 
 | Benchmark | Measured | Threshold | Pass |
 |---|---|---|:-:|
-| `BenchmarkProxyOverhead_NFR1` (p50) | ~12 µs/op | <50 ms | ✅ |
-| `BenchmarkLargePayload_NFR2` (50 MB) | ~7 ms | <200 ms | ✅ |
-| `BenchmarkThroughput_MockMCP` (in-process) | ~25,000 q/s | ≥500 q/s | ✅ |
-| `TestBinarySize_NFR3` (darwin-arm64) | 15.8 MB | <20 MB | ✅ |
+| `BenchmarkProxyOverhead_NFR1` (p50) | ~1.7 µs/op | <50 ms | ✅ |
+| `BenchmarkLargePayload_NFR2` (50 MB) | ~1.2 ms | <200 ms | ✅ |
+| `BenchmarkThroughput_MockMCP` (in-process) | ~333,000 q/s | ≥500 q/s | ✅ |
+| `TestBinarySize_NFR3` (darwin-arm64) | 16.0 MB | <20 MB | ✅ |
 
 ### 4.4 Per-primitive microbenchmarks
 
@@ -184,7 +184,7 @@ cpu: Apple M4
 | "~110 router tokens" | README, architecture | **158 tokens** | Now includes the JSON-RPC envelope (full `tools/list`) |
 | "27.5 LeanProxy tokens" | index.md | **158 tokens** | Same correction; old number was a hand-counted schema-field sum, not the on-wire payload |
 | "~54 tokens per stub" | configuration.md, architecture | **~26 tokens per stub** | Stub is `{name, description, category?}` — measured from the production `registry.ToolStub` |
-| "11 µs overhead at 5,000 RPS" | architecture.md | **~12 µs/op (p50)** | Same order of magnitude; quoted from Bifrost originally — now our own number |
+| "11 µs overhead at 5,000 RPS" | architecture.md | **~1.7 µs/op (p50)** | Quoted from Bifrost originally — now our own number, re-measured on v0.10.1 |
 | "6-7× token reduction" | configuration.md, architecture | **86-99% reduction** | Per-server ratio varies; use the new tables |
 | 4-server column | README, index.md | **3-server (Stitch removed)** | Stitch MCP is no longer available |
 | Garmin 55 / Intervals 67 (README) | README | **Garmin 100 / Intervals 10** | Resolved against `docs/index.md`; now consistent across both docs |
@@ -211,7 +211,7 @@ cpu: Apple M4
 | Version | v0.9.0 |
 | Git | `7db8011` (Merge pull request #269) |
 | Go | 1.25+ |
-| Host | Apple M4, darwin/arm64 |
+| Host | Apple M4 Max, darwin/arm64 (v0.9.0 figures were taken on a base Apple M4) |
 | Date | 2026-08-12 |
 
 ## 8. Modelled numbers vs. measured numbers

@@ -22,7 +22,7 @@
 
 ---
 
-## Latest Benchmark (v0.9.0)
+## Latest Benchmark (v0.10.1)
 
 Measured on a 3-server production-shaped MCP setup (GitHub + Garmin + Intervals.icu) with the canonical `pkg/reporter.Estimator` (1 token ≈ 4 chars). Reproduce with `make bench`.
 
@@ -34,12 +34,31 @@ Measured on a 3-server production-shaped MCP setup (GitHub + Garmin + Intervals.
 | Session savings, Morning Sport (4 prompts) | **94.0%** | ≥90% | ✅ |
 | Session savings, Dev Workflow (5 prompts) | **87.0%** | ≥77% | ✅ |
 | Session savings, Full Day (7 prompts) | **95.6%** | ≥93% | ✅ |
-| Proxy overhead, p50 (parse + cost track) | **~12 µs/op** | <50 ms | ✅ |
-| 50 MB payload estimate, p50 | **~7 ms** | <200 ms | ✅ |
-| Throughput (in-process mock MCP) | **~25,000 q/s** | ≥500 q/s | ✅ |
-| Binary size (darwin-arm64) | **15.8 MB** | <20 MB | ✅ |
+| Proxy overhead, p50 (parse + cost track) | **~1.7 µs/op** | <50 ms | ✅ |
+| 50 MB payload estimate, p50 | **~1.2 ms** | <200 ms | ✅ |
+| Throughput (in-process mock MCP) | **~333,000 q/s** | ≥500 q/s | ✅ |
+| Binary size (darwin-arm64) | **16.0 MB** | <20 MB | ✅ |
 
-> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. They measure the **tool-schema slice** via an accounting model, not end-to-end session cost — the model omits discovery round trips and charges a single stub rather than the full manifest. For measured end-to-end numbers run `make bench-e2e`. **Full results and methodology, including what the modelled figures do and do not claim: [docs/benchmark-results.md](docs/benchmark-results.md).**
+> **What moved since v0.9.0, and what did not.** The savings percentages are unchanged: they are computed from the frozen tool-count snapshot in `tests/bench/fixtures/live-snapshot.json`, so they only move when that snapshot is refreshed against live servers, not when the proxy changes. Re-running them on v0.10.1 reproduces v0.9.0's figures exactly. The four performance rows *did* move and are re-measured here on **Apple M4 Max, darwin/arm64, Go 1.25** — the v0.9.0 figures were taken on a base Apple M4, so part of that gap is hardware and part is code, and this benchmark cannot separate the two.
+
+> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. They measure the **tool-schema slice** via an accounting model, not end-to-end session cost — the model omits discovery round trips and charges a single stub rather than the full manifest. **Full results and methodology, including what the modelled figures do and do not claim: [docs/benchmark-results.md](docs/benchmark-results.md).**
+
+### Measured end-to-end residency (`make bench-e2e`)
+
+New in v0.10.x: rather than modelling the schema slice, this sweep spawns a real proxy per arm and captures the actual `tools/list` payload the client would carry, across a synthetic ballast of 2–200 tools. No LLM, no network, no cost.
+
+| Ballast tools | Native | Lazy | Router |
+|---:|---:|---:|---:|
+| 2 | 345 tok | 141 tok | 544 tok |
+| 8 | 1,359 tok | 555 tok | 544 tok |
+| 24 | 4,064 tok | 1,660 tok | 544 tok |
+| 50 | 8,464 tok | 3,461 tok | 544 tok |
+| 100 | 16,927 tok | 6,923 tok | 544 tok |
+| 200 | 33,852 tok | 13,848 tok | 544 tok |
+
+The router's residency is **flat at 544 tokens regardless of how many tools sit behind it** — that is the whole point of the design. The honest crossovers, interpolated from the table: the router only starts beating **native** at about **3 tools**, and **lazy** at about **8**. Below that, proxying costs you tokens rather than saving them.
+
+Residency is only half the equation. The model still has to *find* the tool, and turns cost tokens too — a router that hides a tool the model then hunts for can lose on net even with flat residency. `make bench-e2e-live` measures that half against a real model, and spends money to do it.
 
 ---
 
@@ -76,7 +95,7 @@ flowchart LR
     style LLM fill:#ee5a5a,color:#fff
 ```
 
-**The result?** You're burning tokens on tool definitions you'll never use in that session. Numbers above are measured on v0.9.0 — see [Latest Benchmark](#latest-benchmark-v090).
+**The result?** You're burning tokens on tool definitions you'll never use in that session. Numbers above are re-measured on v0.10.1 — see [Latest Benchmark](#latest-benchmark-v0101).
 
 ---
 
@@ -119,7 +138,7 @@ flowchart LR
 
 ## Real Results, Real Savings
 
-### 86-99% Token Reduction in Production Sessions (Measured v0.9.0)
+### 86-99% Token Reduction in Production Sessions (Measured v0.10.1)
 
 | Session Type | Native MCP (raw, 0.25x cache read) | LeanProxy | Savings |
 |:-------------|:-----------------------------------|:----------|:--------|
@@ -129,7 +148,7 @@ flowchart LR
 
 ### The Math Doesn't Lie
 
-Measured on v0.9.0 with the same MCP server tool counts as production. Native MCP + 100% cache hit still costs you at **0.25x** (cache read isn't free!). We use the raw `tools/list` token count for Native and the same `pkg/reporter.Estimator` (1 token ≈ 4 chars) for both columns.
+Measured on v0.10.1 with the same MCP server tool counts as production. Native MCP + 100% cache hit still costs you at **0.25x** (cache read isn't free!). We use the raw `tools/list` token count for Native and the same `pkg/reporter.Estimator` (1 token ≈ 4 chars) for both columns.
 
 | Configuration | Native MCP (raw) | LeanProxy (router) | Savings |
 |:--------------|:-----------------|:-------------------|:--------|
