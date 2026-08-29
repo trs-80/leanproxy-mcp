@@ -271,6 +271,27 @@ constrains the agent to them, so `abbench.py` refuses to start on a dirty
 working tree (`--allow-dirty-repo` overrides) and reports anything that changed
 once the sweep finishes.
 
+**Preparing the configuration.** Two of Layer 2's refusals are environmental
+rather than code: a server reachable both directly from the agent and through
+the proxy (loaded twice, so its schema weight lands in every arm), and a
+proxied HTTP server with auth headers (the harness will not copy credentials
+into the agent's config, so the native arm could not reach it).
+`scripts/ab_sweep_config.py` reports and resolves both, computing what to
+disable from abbench's own checks rather than a hardcoded list:
+
+```bash
+python3 scripts/ab_sweep_config.py check     # what would refuse, and why
+python3 scripts/ab_sweep_config.py apply     # disable those entries
+LEANPROXY_AB_LIVE=1 make bench-e2e-live
+python3 scripts/ab_sweep_config.py restore   # put production back
+```
+
+`apply` backs up each file to `<path>.absweep-bak` and refuses if a backup is
+already there, so it can never promote an already-edited file to "the
+operator's original"; `restore` puts them back byte for byte. Stop any running
+agent session first — it shares the agent's config file and task database with
+the sweep.
+
 **Layer 2 refuses before it spends anything.** Ahead of the first `bob run` it
 checks that no server is loaded both directly and through the proxy (by name
 *and* by resolved command path or URL, so the same upstream under two different
