@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -euo pipefail
 
 INSTALL_SCRIPT_VERSION="1.0.0"
@@ -6,8 +6,8 @@ LOG_FILE="/tmp/leanproxy-install.log"
 
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-latest}"
-REPO_owner="leanproxy"
-REPO_name="leanproxy-mcp"
+REPO_owner="trs-80"
+REPO_name="leanproxy-mcp-bob"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -33,7 +33,7 @@ detect_os() {
     case "$(uname -s)" in
         Linux*)     echo "linux";;
         Darwin*)    echo "darwin";;
-        *)          echo " unsupported";;
+        *)          echo "unsupported";;
     esac
 }
 
@@ -194,9 +194,13 @@ _leanproxy() {
 _leanproxy "$@"
 EOFZSH
             local zsh_completion_dir
-            zsh_completion_dir="$(brew --prefix)/share/zsh/site-functions" 2>/dev/null || \
-                                 "${HOME}/.local/share/zsh/site-functions" 2>/dev/null || \
-                                 "${HOME}/.zsh/completions" 2>/dev/null
+            if zsh_completion_dir="$(brew --prefix 2>/dev/null)/share/zsh/site-functions" && [ -d "$zsh_completion_dir" ]; then
+                :
+            elif [ -d "${HOME}/.local/share/zsh/site-functions" ]; then
+                zsh_completion_dir="${HOME}/.local/share/zsh/site-functions"
+            else
+                zsh_completion_dir="${HOME}/.zsh/completions"
+            fi
             if [ -d "$zsh_completion_dir" ]; then
                 cp "$completion_file" "$zsh_completion_dir/"
             fi
@@ -221,7 +225,7 @@ main() {
     os=$(detect_os)
     arch=$(detect_arch)
 
-    if [ "$os" = " unsupported" ]; then
+    if [ "$os" = "unsupported" ]; then
         log_error "Unsupported operating system: $(uname -s)"
         exit 1
     fi
@@ -297,11 +301,14 @@ main() {
 
 DRY_RUN=${DRY_RUN:-false}
 if [ "$DRY_RUN" = "true" ]; then
+    os=$(detect_os)
+    arch=$(detect_arch)
+    current_shell=$(basename "$SHELL" 2>/dev/null || echo "bash")
     echo "[Dry Run] Would perform the following actions:"
     echo "  - Download leanproxy ${VERSION} for ${os}/${arch}"
     echo "  - Install to ${INSTALL_DIR}"
     echo "  - Create ~/.leanproxy configuration"
-    echo "  - Install shell completion for ${current_shell:-bash}"
+    echo "  - Install shell completion for ${current_shell}"
     exit 0
 fi
 
