@@ -33,7 +33,7 @@ LeanProxy-MCP is language-agnostic. It works with any MCP server regardless of t
 
 ### Where can I download the binary?
 
-Download from GitHub Releases: https://github.com/mmornati/leanproxy-mcp/releases
+Download from GitHub Releases: https://github.com/trs-80/leanproxy-mcp-bob/releases
 
 ### Which platforms are supported?
 
@@ -50,19 +50,19 @@ Download from GitHub Releases: https://github.com/mmornati/leanproxy-mcp/release
 Yes, Go 1.25+ is required to build from source:
 
 ```bash
-git clone https://github.com/mmornati/leanproxy-mcp.git
+git clone https://github.com/trs-80/leanproxy-mcp-bob.git
 cd leanproxy-mcp
 go build -o leanproxy-mcp .
 ```
 
 ### How do I install on Windows?
 
-Download the `.exe` from [GitHub Releases](https://github.com/mmornati/leanproxy-mcp/releases) and add to your PATH.
+Download the `.exe` from [GitHub Releases](https://github.com/trs-80/leanproxy-mcp-bob/releases) and add to your PATH.
 
 For PowerShell (replace VERSION with desired version, e.g., v0.5.2):
 ```powershell
 $VERSION = "VERSION"
-Invoke-WebRequest -Uri "https://github.com/mmornati/leanproxy-mcp/releases/download/${VERSION}/leanproxy-mcp_windows_amd64.exe" -OutFile leanproxy.exe
+Invoke-WebRequest -Uri "https://github.com/trs-80/leanproxy-mcp-bob/releases/download/${VERSION}/leanproxy-mcp_windows_amd64.exe" -OutFile leanproxy.exe
 Move-Item leanproxy.exe $env:LOCALAPPDATA\Microsoft\Windows\Tools\
 ```
 
@@ -241,11 +241,11 @@ Yes. The redaction engine runs locally and secrets are never logged or sent anyw
 
 ### How do I report bugs?
 
-Open an issue at: https://github.com/mmornati/leanproxy-mcp/issues
+Open an issue at: https://github.com/trs-80/leanproxy-mcp-bob/issues
 
 ---
 
 ## Need More Help?
 
-- GitHub Issues: https://github.com/mmornati/leanproxy-mcp/issues
-- GitHub Discussions: https://github.com/mmornati/leanproxy-mcp/discussions
+- GitHub Issues: https://github.com/trs-80/leanproxy-mcp-bob/issues
+- GitHub Discussions: https://github.com/trs-80/leanproxy-mcp-bob/discussions

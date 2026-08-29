@@ -298,5 +298,5 @@ Checks:
 
 ## Getting Help
 
-- GitHub Issues: https://github.com/mmornati/leanproxy-mcp/issues
-- Documentation: https://github.com/mmornati/leanproxy-mcp#readme
+- GitHub Issues: https://github.com/trs-80/leanproxy-mcp-bob/issues
+- Documentation: https://github.com/trs-80/leanproxy-mcp-bob#readme

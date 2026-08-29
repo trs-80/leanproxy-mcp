@@ -6,7 +6,7 @@ Thank you for considering contributing to LeanProxy-MCP! This document provides 
 
 If you find a bug, please open a GitHub issue with the following information:
 
-- **Use GitHub Issues**: Go to [Issues](https://github.com/mmornati/leanproxy-mcp/issues) and create a new issue.
+- **Use GitHub Issues**: Go to [Issues](https://github.com/trs-80/leanproxy-mcp-bob/issues) and create a new issue.
 - **Include reproduction steps**: Provide clear steps to reproduce the issue.
 - **Include environment details**: Include your Go version, operating system, and any relevant configuration.
 - **Include relevant logs**: Add any error messages or logs that help diagnose the issue.
@@ -45,7 +45,7 @@ We welcome contributions via Pull Requests. Here's how to submit a PR:
 
 ```bash
 # Clone the repository
-git clone https://github.com/mmornati/leanproxy-mcp.git
+git clone https://github.com/trs-80/leanproxy-mcp-bob.git
 cd leanproxy-mcp
 
 # Install dependencies

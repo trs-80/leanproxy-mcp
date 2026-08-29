@@ -69,7 +69,7 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/mmornati/leanproxy-mcp
+      link: https://github.com/trs-80/leanproxy-mcp-bob
 
 extra_css:
   - stylesheets/extra.css
