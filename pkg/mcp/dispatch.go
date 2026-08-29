@@ -95,7 +95,24 @@ func (h *Handler) handleInitialize(ctx context.Context, req *Request) (*Response
 // initializeServer performs the MCP initialize handshake with an upstream
 // server: initialize request followed by the notifications/initialized
 // notification the protocol requires before any tool call.
+//
+// It is idempotent per process generation. MCP allows exactly one initialize
+// per session, and a spec-compliant server rejects the second — github-mcp-server
+// answers `duplicate "initialize" received`, which failed every call routed
+// through leanproxy. The guard lives here rather than at the call sites
+// because it was at the call sites: toolcall.go checked it, while the tool
+// cache warm-up and the lazy-loading discovery path did not, so the warm-up
+// handshake went unrecorded and the next tool call handshook again.
+//
+// The pool clears this flag on every spawn (StdioServerV2.spawn), so a server
+// that crashes and restarts is re-initialized rather than silently left
+// unhandshaken.
 func (h *Handler) initializeServer(ctx context.Context, serverName string) error {
+	if h.pool.IsServerMCPInitialized(serverName) {
+		h.logger.Debug("server already initialized for this process generation", "name", serverName)
+		return nil
+	}
+
 	h.logger.Info("initializing server", "name", serverName)
 
 	initParams := InitializeParams{
@@ -129,6 +146,11 @@ func (h *Handler) initializeServer(ctx context.Context, serverName string) error
 	if notifyErr != nil {
 		h.logger.Warn("failed to send initialized notification", "name", serverName, "error", notifyErr)
 	}
+
+	// Recorded only on success, and only here. A caller that marked it
+	// separately could drift out of step with the handshake it is meant to
+	// describe — which is the drift that produced the duplicate.
+	h.pool.MarkServerMCPInitialized(serverName)
 
 	h.logger.Info("server ready", "name", serverName)
 	return nil
