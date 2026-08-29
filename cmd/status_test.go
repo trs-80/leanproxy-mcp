@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,13 +75,27 @@ func TestStatusCmd_Flags(t *testing.T) {
 	})
 }
 
-func TestStatusCmd_HelpOutput(t *testing.T) {
-	cmd := statusCmd
-	cmd.SetArgs([]string{"--help"})
+func TestStatusCmd_HelpRendersStatusHelpNotRootHelp(t *testing.T) {
+	requireHelpFor(t, "status")
+}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
+// TestStatusCmd_ReportsNoServersForAnEmptyConfig executes the command against
+// a config it fully controls. Its predecessor asserted err == nil from
+// statusCmd.Execute(), which never reached runStatus.
+//
+// --watch is deliberately never exercised here: runStatusWatch loops until
+// interrupted (status.go:293), and a test that starts it would hang.
+func TestStatusCmd_ReportsNoServersForAnEmptyConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "servers.yaml")
+	if err := os.WriteFile(configPath, []byte("version: \"1.0\"\nservers: []\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("LEANPROXY_CONFIG", configPath)
+
+	out := requireCLISucceeds(t, "status", "--config", configPath)
+
+	if !strings.Contains(out, "No servers configured") {
+		t.Errorf("status on an empty config should say so\ngot:\n%s", out)
 	}
 }
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,95 +240,75 @@ func TestRunCmd_Flags(t *testing.T) {
 	}
 }
 
-func TestRunServerList_EmptyConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "servers.yaml")
+func TestServerList_ReportsNoServersForAnEmptyConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "servers.yaml")
 	t.Setenv("LEANPROXY_CONFIG", configPath)
-
-	cfg := `version: "1.0"
-servers: []
-`
-	if err := os.WriteFile(configPath, []byte(cfg), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: \"1.0\"\nservers: []\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cmd := listCmd
-	cmd.SetArgs([]string{})
+	out := requireCLISucceeds(t, "server", "list")
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Fatalf("list should not error for empty config: %v", err)
+	if !strings.Contains(out, "No servers configured.") {
+		t.Errorf("`server list` on an empty config should say so\ngot:\n%s", out)
 	}
 }
 
-func TestServerListCmd_HelpOutput(t *testing.T) {
-	cmd := listCmd
-	cmd.SetArgs([]string{"--help"})
+// TestServerList_RendersTheServersFromTheConfig is the assertion the old test
+// could not make. Its predecessor pointed LEANPROXY_CONFIG at an EMPTY server
+// list and asserted only err == nil, so it would have passed against a command
+// that ignored the config completely — which, never having executed, it did.
+func TestServerList_RendersTheServersFromTheConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "servers.yaml")
+	t.Setenv("LEANPROXY_CONFIG", configPath)
+	config := `version: "1.0"
+servers:
+  - name: fixture-github
+    transport: stdio
+    enabled: true
+    stdio:
+      command: echo
+      args: ["hello"]
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
+	out := requireCLISucceeds(t, "server", "list")
+
+	for _, want := range []string{"NAME", "STATUS", "TRANSPORT", "COMMAND", "fixture-github", "stdio", "1 server(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("`server list` output missing %q\ngot:\n%s", want, out)
+		}
 	}
 }
 
-func TestServerAddCmd_HelpOutput(t *testing.T) {
-	cmd := addCmd
-	cmd.SetArgs([]string{"--help"})
-
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
-	}
+func TestServerListCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server", "list")
 }
 
-func TestServerRemoveCmd_HelpOutput(t *testing.T) {
-	cmd := removeCmd
-	cmd.SetArgs([]string{"--help"})
-
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
-	}
+func TestServerAddCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server", "add")
 }
 
-func TestServerEnableCmd_HelpOutput(t *testing.T) {
-	cmd := enableCmd
-	cmd.SetArgs([]string{"--help"})
-
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
-	}
+func TestServerRemoveCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server", "remove")
 }
 
-func TestServerDisableCmd_HelpOutput(t *testing.T) {
-	cmd := disableCmd
-	cmd.SetArgs([]string{"--help"})
-
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
-	}
+func TestServerEnableCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server", "enable")
 }
 
-func TestServerRunCmd_HelpOutput(t *testing.T) {
-	cmd := runCmd
-	cmd.SetArgs([]string{"--help"})
-
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
-	}
+func TestServerDisableCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server", "disable")
 }
 
-func TestServerCmd_HelpOutput(t *testing.T) {
-	cmd := serverCmd
-	cmd.SetArgs([]string{"--help"})
+func TestServerRunCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server", "run")
+}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
-	}
+func TestServerCmd_HelpRendersItsOwnHelp(t *testing.T) {
+	requireHelpFor(t, "server")
 }
 
 func TestUpdateStdioServerStatusOnce_NilInputs(t *testing.T) {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -44,23 +45,37 @@ func TestSavingsCmd_Flags(t *testing.T) {
 	}
 }
 
-func TestSavingsCmd_HelpOutput(t *testing.T) {
-	cmd := savingsCmd
-	cmd.SetArgs([]string{"--help"})
+func TestSavingsCmd_HelpRendersSavingsHelpNotRootHelp(t *testing.T) {
+	requireHelpFor(t, "savings")
+}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
+// TestSavingsCmd_ResetConfirmsCountersWereReset asserts the command reported
+// the reset it performed (savings.go:36). Its predecessor asserted err == nil
+// from savingsCmd.Execute(), which never reached runSavings — so `--reset`
+// could have been a no-op, or panicked on a nil tracker, and the test passed.
+func TestSavingsCmd_ResetConfirmsCountersWereReset(t *testing.T) {
+	out := requireCLISucceeds(t, "savings", "--reset")
+
+	if !strings.Contains(out, "Savings counters reset") {
+		t.Errorf("`savings --reset` did not confirm the reset\ngot:\n%s", out)
 	}
 }
 
-func TestSavingsCmd_ResetFlag(t *testing.T) {
-	cmd := savingsCmd
-	cmd.SetArgs([]string{"--reset"})
+// TestSavingsCmd_ReportsSummaryWhenNoFlagsGiven pins the default rendering:
+// the bare command prints the cumulative summary, not JSON and not a
+// per-server breakdown.
+func TestSavingsCmd_ReportsSummaryWhenNoFlagsGiven(t *testing.T) {
+	out := requireCLISucceeds(t, "savings")
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("reset flag should not error: %v", err)
+	for _, want := range []string{
+		"=== Token Savings Summary ===",
+		"Total Original Tokens:",
+		"Total Optimized Tokens:",
+		"Total Saved Tokens:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("`savings` summary missing %q\ngot:\n%s", want, out)
+		}
 	}
 }
 
