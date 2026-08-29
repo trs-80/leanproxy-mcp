@@ -84,6 +84,10 @@ func getRunningStatusList() proxy.ServerStatusList {
 	fmt.Printf("Running leanproxy instance (PID: %d, started: %s, listen: %s)\n\n",
 		info.PID, info.StartedAt.Format("2006-01-02 15:04:05"), info.ListenAddr)
 
+	if summary := renderTruncationSummary(info.Truncation); summary != "" {
+		fmt.Print(summary + "\n")
+	}
+
 	statusList := make([]proxy.ServerStatus, 0, len(info.Servers))
 	for _, s := range info.Servers {
 		var healthStatus proxy.ServerHealthStatus

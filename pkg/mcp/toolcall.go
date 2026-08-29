@@ -61,10 +61,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 	// Cache lookup keys on the stripped arguments so calls differing only in
 	// max_response_chars share an entry; the cap is applied per call below.
 	if cached, ok := h.cachedToolResult(serverName, toolName, params.Arguments); ok {
-		result := cached
-		if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
-			result = truncateToolResult(result, capVal, explicitCap > 0)
-		}
+		result := h.applyResponseCap(serverName, toolName, cached, explicitCap)
 		return &Response{
 			JSONRPC: JSONRPCVersion,
 			Result:  result,
@@ -109,10 +106,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *Request) (*Response,
 		result = minifyToolResult(result)
 	}
 	h.storeToolResult(serverName, toolName, params.Arguments, result)
-
-	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
-		result = truncateToolResult(result, capVal, explicitCap > 0)
-	}
+	result = h.applyResponseCap(serverName, toolName, result, explicitCap)
 
 	return &Response{
 		JSONRPC: JSONRPCVersion,
@@ -198,10 +192,7 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 	// arguments), so either dispatch surface can hit entries the other
 	// stored. A hit skips restart, handshake, and the upstream call.
 	if cached, ok := h.cachedToolResult(serverName, toolName, arguments); ok {
-		result := cached
-		if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
-			result = truncateToolResult(result, capVal, explicitCap > 0)
-		}
+		result := h.applyResponseCap(serverName, toolName, cached, explicitCap)
 		return &Response{
 			JSONRPC: JSONRPCVersion,
 			Result:  result,
@@ -308,10 +299,7 @@ func (h *Handler) handleInvokeTool(ctx context.Context, req *Request, params Too
 		result = minifyToolResult(result)
 	}
 	h.storeToolResult(serverName, toolName, arguments, result)
-
-	if capVal := h.responseCapFor(serverName, toolName, explicitCap); capVal > 0 {
-		result = truncateToolResult(result, capVal, explicitCap > 0)
-	}
+	result = h.applyResponseCap(serverName, toolName, result, explicitCap)
 
 	return &Response{
 		JSONRPC: JSONRPCVersion,

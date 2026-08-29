@@ -22,6 +22,14 @@ type ServerStatus struct {
 	LastActivity time.Time `json:"last_activity"`
 }
 
+// TruncationStat mirrors mcp.TruncationStat (kept local so statusfile stays
+// dependency-free): result-cap activity for one upstream tool.
+type TruncationStat struct {
+	TruncatedCalls int64 `json:"truncated_calls"`
+	BytesBefore    int64 `json:"bytes_before"`
+	BytesAfter     int64 `json:"bytes_after"`
+}
+
 type CostTracking struct {
 	ByTool   map[string]int64 `json:"by_tool"`
 	ByServer map[string]int64 `json:"by_server"`
@@ -35,6 +43,8 @@ type StatusInfo struct {
 	ListenAddr   string         `json:"listen_addr"`
 	Servers      []ServerStatus `json:"servers"`
 	CostTracking *CostTracking  `json:"cost_tracking,omitempty"`
+	// Truncation holds per-tool result-cap counters keyed "server/tool".
+	Truncation map[string]TruncationStat `json:"truncation,omitempty"`
 }
 
 type FileStatusStore struct {
@@ -101,6 +111,19 @@ func (s *FileStatusStore) UpdateServers(servers []ServerStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.info.Servers = servers
+	s.writeLocked()
+}
+
+// UpdateTruncation replaces the per-tool truncation counters and rewrites the
+// status file. A nil or empty map clears the section.
+func (s *FileStatusStore) UpdateTruncation(stats map[string]TruncationStat) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(stats) == 0 {
+		s.info.Truncation = nil
+	} else {
+		s.info.Truncation = stats
+	}
 	s.writeLocked()
 }
 

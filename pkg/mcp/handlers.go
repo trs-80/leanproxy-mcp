@@ -17,6 +17,7 @@ package mcp
 
 import (
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +61,10 @@ type Handler struct {
 	// for the window render name-only in lazy tools/list.
 	adaptiveWindows map[string]time.Duration
 	usage           *usageTracker
+	// truncStats counts result-cap cuts per "server/tool"; truncMu guards it
+	// (results are dispatched concurrently on the HTTP/SSE transports).
+	truncMu    sync.Mutex
+	truncStats map[string]TruncationStat
 }
 
 func NewHandler(p pool.ServerSource, logger *slog.Logger) *Handler {

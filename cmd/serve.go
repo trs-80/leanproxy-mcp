@@ -105,14 +105,17 @@ func init() {
 }
 
 var (
-	serverReg         registry.Registry
-	toolReg           router.ToolRegistry
-	gatewayTools      gateway.GatewayTools
-	stdioPool         *pool.StdioPool
-	httpPool          *pool.HTTPClientPool
-	ssePool           *pool.SSEPool
-	unifiedPool       *pool.UnifiedPool
-	statusStore       *statusfile.FileStatusStore
+	serverReg    registry.Registry
+	toolReg      router.ToolRegistry
+	gatewayTools gateway.GatewayTools
+	stdioPool    *pool.StdioPool
+	httpPool     *pool.HTTPClientPool
+	ssePool      *pool.SSEPool
+	unifiedPool  *pool.UnifiedPool
+	statusStore  *statusfile.FileStatusStore
+	// statusMCPHandler feeds truncation counters into the status file; set
+	// once at startup before the status ticker goroutine starts.
+	statusMCPHandler  *mcp.Handler
 	globalModelRouter modelrouter.ModelRouter
 	serverTiers       map[string]string
 	globalSidecar     *sidecar.Manager
@@ -375,6 +378,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	handler := mcp.NewHandlerWithToolStore(unifiedPool, slog.Default(), toolStore)
 	applyServerToolConfig(handler, loadedCfg)
+	statusMCPHandler = handler
 
 	cacheCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -1572,6 +1576,9 @@ func updateServerStatusPeriodically() {
 		}
 
 		statusStore.UpdateServers(statuses)
+		if statusMCPHandler != nil {
+			pushTruncationStatus(statusStore, statusMCPHandler.TruncationStats())
+		}
 	}
 }
 
