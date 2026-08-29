@@ -4,6 +4,11 @@ set -euo pipefail
 REPO_owner="${REPO_owner:-leanproxy}"
 REPO_name="${REPO_name:-leanproxy-mcp}"
 VERSION="${VERSION:-}"
+# Same values the Makefile injects, resolved with the same fallbacks so a
+# build outside a git checkout still produces a usable binary rather than
+# aborting under `set -u`.
+COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "")}"
+BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")}"
 OUTPUT_DIR="${OUTPUT_DIR:-./dist}"
 
 log() {
@@ -50,8 +55,17 @@ build_binary() {
 
     log_info "Building $bin_name..."
 
+    # Must match the Makefile's LDFLAGS. The previous value injected into
+    # github.com/mmornati/leanproxy-mcp/cmd.versionString, which is wrong twice
+    # over: the module is now github.com/trs-80/leanproxy-mcp-bob, and no
+    # symbol named cmd.versionString has ever existed. `go build -X` silently
+    # ignores an unknown symbol, so this script has been producing binaries
+    # that report the built-in default "dev" while appearing to succeed.
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
-        -ldflags="-s -w -X github.com/mmornati/leanproxy-mcp/cmd.versionString=${VERSION}" \
+        -ldflags="-s -w \
+            -X github.com/trs-80/leanproxy-mcp-bob/internal/version.Version=${VERSION} \
+            -X github.com/trs-80/leanproxy-mcp-bob/internal/version.Commit=${COMMIT} \
+            -X github.com/trs-80/leanproxy-mcp-bob/internal/version.BuildTime=${BUILD_TIME}" \
         -o "$output_path" \
         .
 
