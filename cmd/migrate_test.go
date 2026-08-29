@@ -156,7 +156,7 @@ func TestMigrateCmd_CancelsRatherThanImportingWithoutConfirmation(t *testing.T) 
 // TestGlobalDryRunFlag_IsParsedButNeverReachesDryRunEnabled documents a
 // PRODUCTION BUG rather than hiding it.
 //
-// migrate.go:69 honours `migrateDryRun || DryRunEnabled`, and add.go:166,
+// migrate.go:69 honors `migrateDryRun || DryRunEnabled`, and add.go:166,
 // add.go:203 and serve.go:161 read DryRunEnabled too — but root.go:39
 // registers the persistent flag as
 //

@@ -42,7 +42,7 @@ func (m *mockVectorStore) Upsert(_ context.Context, records ...vectordb.VectorRe
 func (m *mockVectorStore) Search(_ context.Context, vector []float32, k int) ([]vectordb.SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var results []vectordb.SearchResult
+	results := make([]vectordb.SearchResult, 0, len(m.records))
 	for _, rec := range m.records {
 		sim := cosineSim(vector, rec.Vector)
 		results = append(results, vectordb.SearchResult{Record: rec, Score: sim})

@@ -75,7 +75,7 @@ servers: []
 
 	// Assert the startup decision from the log, not a probe of some unrelated
 	// port. The old test GET'd a freePort nobody was ever asked to bind, so it
-	// passed whether or not --metrics-bind=off was honoured. pkg/metrics logs
+	// passed whether or not --metrics-bind=off was honored. pkg/metrics logs
 	// "metrics endpoint disabled" on the ListenAndServe path in cmd/serve.go,
 	// which runs before "server ready" — so if the flag were ignored and a
 	// listener came up instead, this line would be absent and the test red.
