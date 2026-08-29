@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/postgresql"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/postgresql"
 )
 
 func TestGetConfig_Defaults(t *testing.T) {

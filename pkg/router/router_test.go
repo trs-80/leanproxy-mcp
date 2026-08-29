@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 func TestParseMethod(t *testing.T) {

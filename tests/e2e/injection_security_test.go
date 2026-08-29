@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 )
@@ -23,7 +22,7 @@ import (
 func TestStory_13_2_DoctorSecurity_ReportsPolicyBands(t *testing.T) {
 	requireBinary(t)
 
-	stdout, stderr, exitCode := runBinary("doctor", "--security")
+	stdout, stderr, exitCode := runBinary(t, "doctor", "--security")
 	t.Logf("doctor --security: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {
@@ -38,17 +37,24 @@ func TestStory_13_2_DoctorSecurity_ReportsPolicyBands(t *testing.T) {
 	}
 }
 
-func TestStory_13_2_QuarantineDirectory_Exists(t *testing.T) {
+// This replaces a stat of the operator's real ~/.leanproxy/quarantine, which
+// could only ever skip (clean machine) or trivially pass (dirty one) — the
+// result was a property of the developer's box, not of the code. Under an
+// injected home the quarantine store is guaranteed empty, so the empty-state
+// report is a deterministic thing to assert.
+func TestDoctorSecurity_OnCleanHome_ReportsAnEmptyQuarantine(t *testing.T) {
 	requireBinary(t)
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("no home: %v", err)
-	}
+	stdout, stderr, exitCode := runBinary(t, "doctor", "--security")
 
-	dir := home + "/.leanproxy/quarantine"
-	if _, err := os.Stat(dir); err != nil {
-		t.Skipf("quarantine dir not present at %s (no malicious traffic yet): %v", dir, err)
+	if exitCode != 0 {
+		t.Fatalf("doctor --security: exit %d, want 0 (stdout=%q stderr=%q)", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Quarantine Status") {
+		t.Errorf("doctor --security stdout = %q, want a Quarantine Status section", stdout)
+	}
+	if !strings.Contains(stdout, "Total quarantined payloads: 0") {
+		t.Errorf("doctor --security on an empty quarantine store reported %q, want a zero total", stdout)
 	}
 }
 
@@ -59,7 +65,7 @@ func TestStory_13_2_QuarantineDirectory_Exists(t *testing.T) {
 func TestStory_13_2_DoctorSecurity_JSON(t *testing.T) {
 	requireBinary(t)
 
-	stdout, _, exitCode := runBinary("doctor", "--security", "--json")
+	stdout, _, exitCode := runBinary(t, "doctor", "--security", "--json")
 	t.Logf("doctor --security --json: exit=%d stdout=%q", exitCode, stdout)
 	if exitCode != 0 {
 		t.Skip("--json variant not yet supported on doctor")

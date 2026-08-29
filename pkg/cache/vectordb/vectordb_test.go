@@ -7,16 +7,32 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// isolateHome points os.UserHomeDir() at a per-test temp dir. defaultSQLitePath()
+// resolves to <home>/.leanproxy/cache/vectors.db and newSQLiteStore MkdirAlls that
+// directory and runs DDL against it, so without this a test that exercises the
+// home-derived default would create and mutate the operator's real vector DB (plus
+// its -wal/-shm sidecars) and contend with any running leanproxy on that one file.
+// t.Setenv restores the previous value automatically and makes t.Parallel a panic,
+// which also prevents a future parallel variant from racing on the shared path.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)        // os.UserHomeDir on unix/darwin
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on windows
+}
+
 func TestNewStore_DefaultSQLite(t *testing.T) {
+	isolateHome(t)
+
 	store, err := NewStore(nil, discardLogger())
 	require.NoError(t, err)
 	require.NotNil(t, store)
@@ -27,8 +43,11 @@ func TestNewStore_DefaultSQLite(t *testing.T) {
 }
 
 func TestNewStore_SQLiteBackend(t *testing.T) {
+	isolateHome(t)
+
 	store, err := NewStore(&migrate.VectorStoreConfig{
 		Backend: "sqlite-vec",
+		SQLite:  &migrate.SQLiteVectorConfig{Path: ":memory:"},
 	}, discardLogger())
 	require.NoError(t, err)
 	require.NotNil(t, store)

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 // syntheticServer seeds count tools shaped like a production MCP server:

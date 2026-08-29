@@ -3,10 +3,11 @@ package redistools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"log/slog"
-	"strings"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,7 +114,15 @@ func TestToolSchemasValid(t *testing.T) {
 	}
 }
 
-func TestWriteCommandFormat(t *testing.T) {
+// TestWriteCommandEncodesRESP drives the real encoder over net.Pipe rather than
+// rebuilding the RESP framing in the test body. A test that re-implements the
+// serializer can never fail — a wrong bulk-string length prefix or a dropped CRLF
+// would make a real Redis server reject every command while the test stayed green.
+// net.Pipe is unbuffered and synchronous, so the read must run in a goroutine
+// concurrently with the write; io.ReadAll (rather than reading exactly len(want)
+// bytes) catches an over-long encoding as well as a truncated one, and closing the
+// writing end is what gives the reader its EOF.
+func TestWriteCommandEncodesRESP(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -138,12 +147,28 @@ func TestWriteCommandFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var buf strings.Builder
-			buf.WriteString(fmt.Sprintf("*%d\r\n", len(tt.args)))
-			for _, arg := range tt.args {
-				buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))
+			clientConn, serverConn := net.Pipe()
+			t.Cleanup(func() {
+				clientConn.Close()
+				serverConn.Close()
+			})
+
+			got := make(chan string, 1)
+			go func() {
+				b, _ := io.ReadAll(serverConn)
+				got <- string(b)
+			}()
+
+			c := testClient()
+			require.NoError(t, c.writeCommand(clientConn, tt.args...), "writeCommand(%q) returned an error", tt.args)
+			require.NoError(t, clientConn.Close(), "closing the write end of the pipe failed")
+
+			select {
+			case s := <-got:
+				assert.Equal(t, tt.want, s, "writeCommand(%q) wrote the wrong RESP bytes", tt.args)
+			case <-time.After(5 * time.Second):
+				t.Fatalf("timed out after 5s reading the RESP encoding of %q", tt.args)
 			}
-			assert.Equal(t, tt.want, buf.String())
 		})
 	}
 }

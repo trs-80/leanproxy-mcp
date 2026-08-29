@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/mmornati/leanproxy-mcp/cmd"
+	"github.com/trs-80/leanproxy-mcp-bob/cmd"
 )
 
 func main() {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
 )
 
 func lazyToolsList(t *testing.T, h *Handler) []Tool {

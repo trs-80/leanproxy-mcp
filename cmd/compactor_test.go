@@ -4,10 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/compactor"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/compactor"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 func TestRebuildCommand_UnknownServer(t *testing.T) {
@@ -168,23 +169,49 @@ servers:
 	}
 }
 
-func TestRebuildCommand_HelpOutput(t *testing.T) {
-	cmd := rebuildCmd
-	cmd.SetArgs([]string{"--help"})
+func TestRebuildCommand_HelpRendersRebuildHelpNotRootHelp(t *testing.T) {
+	requireHelpFor(t, "compactor", "rebuild")
+}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
+func TestCompactorCommand_HelpRendersCompactorHelpNotRootHelp(t *testing.T) {
+	requireHelpFor(t, "compactor")
+}
+
+// TestRebuildCommand_RequiresAServerNameOrAll pins the guard at
+// compactor.go:59. This is the first test in this file to reach runRebuild at
+// all: the two help tests above it never did, so nothing here exercised the
+// command's own argument contract.
+//
+// rebuild uses RunE, so unlike most commands in this package its failures do
+// reach the caller as an error — which is what makes this assertable.
+func TestRebuildCommand_RequiresAServerNameOrAll(t *testing.T) {
+	out, err := runCLI(t, "compactor", "rebuild")
+
+	if err == nil {
+		t.Fatalf("`compactor rebuild` with no server and no --all must fail\noutput:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "specify server name or use --all flag") {
+		t.Errorf("error should name the missing argument, got: %v", err)
 	}
 }
 
-func TestCompactorCommand_HelpOutput(t *testing.T) {
-	cmd := compactorCmd
-	cmd.SetArgs([]string{"--help"})
+// TestRebuildCommand_ReportsMissingServer proves the command reads the config
+// it was given and rejects a name that is not in it.
+func TestRebuildCommand_ReportsMissingServer(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "servers.yaml")
+	if err := os.WriteFile(configPath, []byte("version: \"1.0\"\nservers: []\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("LEANPROXY_CONFIG", configPath)
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
+	out, err := runCLI(t, "compactor", "rebuild", "no-such-server")
+
+	if err == nil {
+		t.Fatalf("rebuilding a server absent from the config must fail\noutput:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "no servers configured") &&
+		!strings.Contains(err.Error(), `"no-such-server" not found`) {
+		t.Errorf("error should explain the server is not in the registry, got: %v", err)
 	}
 }
 

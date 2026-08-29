@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/cache/embedder"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache/embedder"
 )
 
 func TestEmbedToolCallNoPool(t *testing.T) {

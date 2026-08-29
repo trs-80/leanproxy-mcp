@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 // echoServerConfig builds a StdioServerConfig that runs the fake MCP helper

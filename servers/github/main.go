@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/githubtools"
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/ratelimit"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/githubtools"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/ratelimit"
 )
 
 const serverName = "leanproxy-mcp-github"

@@ -40,7 +40,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          checksums_url="https://github.com/mmornati/leanproxy-mcp/releases/download/v${VERSION}/checksums.txt"
+          checksums_url="https://github.com/trs-80/leanproxy-mcp-bob/releases/download/v${VERSION}/checksums.txt"
 
           for i in $(seq 1 30); do
             if curl -fsL "$checksums_url" -o /tmp/checksums.txt; then
@@ -80,29 +80,29 @@ jobs:
           cat > Formula/leanproxy-mcp.rb << EOF
           class LeanproxyMcp < Formula
             desc "LeanProxy-MCP - A lightweight token firewall for MCP servers"
-            homepage "https://github.com/mmornati/leanproxy-mcp"
+            homepage "https://github.com/trs-80/leanproxy-mcp-bob"
             license "MIT"
 
             version "$VERSION"
 
             on_macos do
               on_arm do
-                url "https://github.com/mmornati/leanproxy-mcp/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_darwin_arm64.tar.gz"
+                url "https://github.com/trs-80/leanproxy-mcp-bob/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_darwin_arm64.tar.gz"
                 sha256 "${SHA_DARWIN_ARM64}"
               end
               on_intel do
-                url "https://github.com/mmornati/leanproxy-mcp/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_darwin_amd64.tar.gz"
+                url "https://github.com/trs-80/leanproxy-mcp-bob/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_darwin_amd64.tar.gz"
                 sha256 "${SHA_DARWIN_AMD64}"
               end
             end
 
             on_linux do
               on_arm do
-                url "https://github.com/mmornati/leanproxy-mcp/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_linux_arm64.tar.gz"
+                url "https://github.com/trs-80/leanproxy-mcp-bob/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_linux_arm64.tar.gz"
                 sha256 "${SHA_LINUX_ARM64}"
               end
               on_intel do
-                url "https://github.com/mmornati/leanproxy-mcp/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_linux_amd64.tar.gz"
+                url "https://github.com/trs-80/leanproxy-mcp-bob/releases/download/v${VERSION}/leanproxy-mcp_${VERSION}_linux_amd64.tar.gz"
                 sha256 "${SHA_LINUX_AMD64}"
               end
             end
@@ -141,11 +141,11 @@ jobs:
 
             The formula is now ready for Homebrew installation:
             ```bash
-            brew tap mmornati/leanproxy-mcp https://github.com/mmornati/leanproxy-mcp
+            brew tap trs-80/leanproxy-mcp-bob https://github.com/trs-80/leanproxy-mcp-bob
             brew install leanproxy-mcp
             ```
 
-            Created by GitHub Actions - [Homebrew Formula Update](https://github.com/mmornati/leanproxy-mcp/actions/workflows/homebrew-formula-update.yml)
+            Created by GitHub Actions - [Homebrew Formula Update](https://github.com/trs-80/leanproxy-mcp-bob/actions/workflows/homebrew-formula-update.yml)
           branch: homebrew-formula-update-v${{ steps.version.outputs.version }}
           delete-branch: true
           token: ${{ secrets.GITHUB_TOKEN }}

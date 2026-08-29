@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/mmornati/leanproxy-mcp/internal/version"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/version"
 )
 
 var versionCmd = &cobra.Command{

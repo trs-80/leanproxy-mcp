@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v62/github"
-	"github.com/mmornati/leanproxy-mcp/pkg/ratelimit"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/ratelimit"
 	"golang.org/x/oauth2"
 )
 

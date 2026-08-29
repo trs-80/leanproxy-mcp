@@ -7,10 +7,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mmornati/leanproxy-mcp"
+    "url": "https://github.com/trs-80/leanproxy-mcp-bob"
   },
   "bugs": {
-    "url": "https://github.com/mmornati/leanproxy-mcp/issues"
+    "url": "https://github.com/trs-80/leanproxy-mcp-bob/issues"
   },
   "engines": {
     "vscode": "^1.95.0"

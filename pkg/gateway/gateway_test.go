@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
-	"github.com/mmornati/leanproxy-mcp/pkg/router"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/router"
 )
 
 func TestListTools(t *testing.T) {

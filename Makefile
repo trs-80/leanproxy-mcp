@@ -86,18 +86,32 @@ dev: tidy ## Run with file watcher (requires entr)
 	@find . -name "*.go" -not -path "./vendor/*" | entr -r $(GO) run .
 
 .PHONY: test-e2e
-test-e2e: ## Run E2E tests (requires built binary)
-	@echo "Building binary for E2E tests..."
-	$(GO) build -ldflags="$(LDFLAGS)" -trimpath -o $(BINARY_NAME) .
+# The e2e suite gates every test on a binary at tests/e2e/leanproxy-mcp
+# (binaryAvailable in tests/e2e/main_test.go) and SKIPS when it is absent.
+# These targets used to build to $(BINARY_NAME) in the repo root instead, so
+# the build succeeded, the binary landed where nothing looks for it, and the
+# whole suite reported green having run nothing. Two places decided where the
+# binary goes and they disagreed; now only TestMain decides. LEANPROXY_E2E
+# makes it build the binary itself AND turns a missing binary into a hard
+# failure, so a skip can no longer hide inside a green run.
+test-e2e: ## Run E2E tests (TestMain builds the binary; skips are failures)
 	@echo "Running E2E tests..."
-	$(GO) test -v -timeout 10m ./tests/e2e/...
+	LEANPROXY_E2E=1 $(GO) test -v -timeout 10m ./tests/e2e/...
 
 .PHONY: test-e2e-short
-test-e2e-short: ## Run E2E tests (short mode, requires built binary)
-	@echo "Building binary for E2E tests..."
-	$(GO) build -ldflags="$(LDFLAGS)" -trimpath -o $(BINARY_NAME) .
+test-e2e-short: ## Run E2E tests (short mode; TestMain builds the binary)
 	@echo "Running E2E tests (short mode)..."
-	$(GO) test -v -short -timeout 2m ./tests/e2e/...
+	LEANPROXY_E2E=1 $(GO) test -v -short -timeout 2m ./tests/e2e/...
+
+.PHONY: test-integration
+test-integration: ## Run the build-tagged integration suite (tests/integration)
+	@echo "Running integration-tagged tests..."
+	$(GO) test -v -tags=integration -timeout 5m ./tests/integration/...
+
+.PHONY: test-python
+test-python: ## Run the pytest suite for the A/B benchmark harness
+	@echo "Running Python tests..."
+	python3 -m pytest tests/bench/e2e/ -q
 
 .PHONY: bench
 bench: ## Run token-economy + NFR benchmarks, capture into bench-results/
@@ -125,8 +139,40 @@ bench-snapshot: ## Refresh live MCP snapshot (requires reachable MCP servers)
 		-config tests/bench/fixtures/live-snapshot.yaml \
 		-out   tests/bench/fixtures/live-snapshot.json
 
+.PHONY: bench-e2e
+bench-e2e: ## Run the free residency sweep (no LLM, no coins, CI-safe)
+	@echo "Running e2e residency sweep across all three arms..."
+	@mkdir -p bench-results
+	$(GO) test ./tests/bench/e2e/ -run 'TestResidency' -v -timeout 10m
+
+.PHONY: bench-e2e-live
+bench-e2e-live: ## Run the live A/B sweep (SPENDS COINS and runs an unsupervised write-capable agent in this repo; requires LEANPROXY_AB_LIVE=1 set by the caller)
+ifndef LEANPROXY_AB_LIVE
+	$(error LEANPROXY_AB_LIVE=1 is required — this target spends coins. Run: LEANPROXY_AB_LIVE=1 make bench-e2e-live)
+endif
+	@echo "Running live A/B sweep — this spends coins."
+	@echo "It also runs 30 unsupervised agent sessions with write-capable tools in"
+	@echo "$(CURDIR). abbench refuses to start on a dirty working tree; commit or"
+	@echo "stash first. It swaps ~/.bob/settings/mcp.json per arm and restores it on"
+	@echo "every exit path, including SIGINT/SIGTERM/SIGHUP."
+	@# Layer 3 joins this sweep to Layer 1's residency figures, and Layer 1
+	@# builds its proxy from source into a temp dir. Building here too keeps
+	@# both layers on the same working tree rather than joining live turn
+	@# counts against whatever build happens to sit in ~/.local/bin. Not
+	@# dist/: that is the path Bob's own mcp.json launches, and overwriting
+	@# it mid-sweep would swap the proxy under a running session.
+	@mkdir -p $(BENCH_BIN_DIR)
+	$(GO) build -trimpath -o $(BENCH_BIN_DIR)/$(BINARY_NAME) .
+	@# The default sweep includes a 100-tool ballast point, and abbench
+	@# refuses any non-zero point without --mock-bin. Without this the target
+	@# could not run its own default.
+	$(GO) build -trimpath -o $(BENCH_BIN_DIR)/mockmcp ./tests/bench/mockmcp/cmd
+	python3 scripts/abbench.py --out bench-results \
+		--leanproxy-bin $(BENCH_BIN_DIR)/$(BINARY_NAME) \
+		--mock-bin $(BENCH_BIN_DIR)/mockmcp
+
 .PHONY: test-all
-test-all: lint test test-e2e ## Run lint, unit tests, and E2E tests
+test-all: lint test test-e2e test-integration test-python ## Run lint, unit, E2E, integration-tagged, and Python tests
 
 .PHONY: vet
 vet: ## Run go vet
@@ -169,6 +215,9 @@ changelog: ## Generate changelog from git log
 
 BINARY_NAME := leanproxy-mcp
 DIST_DIR := dist
+# Deliberately not DIST_DIR: Bob's mcp.json launches dist/leanproxy-mcp, and
+# the live sweep must not rebuild the binary a running session is using.
+BENCH_BIN_DIR := .bench-bin
 GO := go
 GOLANGCI_VERSION := v1.62.0
 GOPATH := $(shell go env GOPATH)
@@ -177,4 +226,4 @@ LATEST_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "")
 VERSION ?= $(LATEST_TAG)
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
-LDFLAGS := -s -w -X github.com/mmornati/leanproxy-mcp/internal/version.Version=$(VERSION) -X github.com/mmornati/leanproxy-mcp/internal/version.Commit=$(COMMIT) -X github.com/mmornati/leanproxy-mcp/internal/version.BuildTime=$(BUILD_TIME)
+LDFLAGS := -s -w -X github.com/trs-80/leanproxy-mcp-bob/internal/version.Version=$(VERSION) -X github.com/trs-80/leanproxy-mcp-bob/internal/version.Commit=$(COMMIT) -X github.com/trs-80/leanproxy-mcp-bob/internal/version.BuildTime=$(BUILD_TIME)

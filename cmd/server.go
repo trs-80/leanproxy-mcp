@@ -10,19 +10,19 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
-	"github.com/mmornati/leanproxy-mcp/pkg/statusfile"
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/statusfile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
 var serverCmd = &cobra.Command{
@@ -944,8 +944,15 @@ func applyServerToolConfig(handler *mcp.Handler, cfg *migrate.Config) {
 		}
 	}
 	if adaptive {
-		if usr, err := user.Current(); err == nil {
-			handler.EnableUsageTracking(filepath.Join(usr.HomeDir, ".config", "leanproxy", "toolusage.json"))
+		// cachefile.HomeDir ($LEANPROXY_HOME, else $HOME) — the same
+		// convention internal/cachefile.Dir and pkg/statusfile use, and for
+		// the same reason: a proxy the e2e harness spawns hundreds of times
+		// per sweep must keep its state inside the harness's private root
+		// instead of depositing it in the operator's real config root. This
+		// is the file adaptive stubs read and write, so it was the one
+		// remaining path that could escape.
+		if home, err := cachefile.HomeDir(); err == nil {
+			handler.EnableUsageTracking(filepath.Join(home, ".config", "leanproxy", "toolusage.json"))
 		} else {
 			slog.Warn("adaptive stubs disabled: cannot resolve home dir for usage file", "error", err)
 		}

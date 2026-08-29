@@ -13,9 +13,17 @@ import (
 // 10, so partials cannot reach it without full coverage).
 const fullCoverageBonus = 1000
 
-// minFullMatchesForPrecision: with at least this many full-coverage matches,
-// partial matches are dropped from search results entirely.
-const minFullMatchesForPrecision = 1
+// nearMissMinQueryWords: the query length at which a partial match that misses
+// exactly one word is kept alongside full-coverage matches.
+//
+// Dropping every partial the moment ONE tool covered all the words measured as
+// a real discovery failure: "search graph trace callers" returned search_graph
+// alone (4/4) and hid trace_path (3/4, missing only "search"), so the model
+// never learned the tool it was asking for existed and spent four turns
+// without it. But on a short query the same "misses one word" is genuine
+// noise — for "create issue", create_branch matches only half the query.
+// Three words is where missing one still means most of the query matched.
+const nearMissMinQueryWords = 3
 
 // handleSearchTools answers the search_tools gateway tool: a single-call,
 // cross-server keyword search that returns invocation-ready signatures so the
@@ -99,6 +107,7 @@ func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescCha
 		server string
 		tool   Tool
 		score  int
+		hits   int
 	}
 	var matches []scored
 
@@ -108,7 +117,7 @@ func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescCha
 		}
 		for _, tool := range tools {
 			if len(queryWords) == 0 {
-				matches = append(matches, scored{serverName, tool, 0})
+				matches = append(matches, scored{serverName, tool, 0, 0})
 				continue
 			}
 			name := strings.ToLower(serverName + "_" + tool.Name)
@@ -130,7 +139,7 @@ func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescCha
 			if hits == len(queryWords) {
 				score += fullCoverageBonus
 			}
-			matches = append(matches, scored{serverName, tool, score})
+			matches = append(matches, scored{serverName, tool, score, hits})
 		}
 	}
 
@@ -147,18 +156,33 @@ func (h *Handler) searchToolCacheFiltered(query, serverFilter string, maxDescCha
 		return matches[i].tool.Name < matches[j].tool.Name
 	})
 
-	// Precision guard: when enough tools match every query word, weaker
-	// partial matches are noise that inflates the payload (the whole point of
-	// search over list_tools). Partial matches serve only as a fallback so a
-	// near-miss query still returns something actionable instead of nothing.
+	// Precision guard: once any tool matches every query word, weaker partial
+	// matches are noise that inflates the payload (the whole point of search
+	// over list_tools). Near-misses survive it — a tool that missed exactly
+	// one word of a query at least nearMissMinQueryWords long is a candidate
+	// the caller asked for, not noise, and hiding it behind a full-coverage
+	// match is how a model ends up never seeing the tool it needs. Matches are
+	// already sorted, so full-coverage hits still rank above every near-miss.
 	full := 0
 	for _, m := range matches {
 		if m.score >= fullCoverageBonus {
 			full++
 		}
 	}
-	if full >= minFullMatchesForPrecision {
+	switch {
+	case full == 0:
+		// Nothing covered the whole query; every partial is the fallback.
+	case len(queryWords) < nearMissMinQueryWords:
 		matches = matches[:full]
+	default:
+		keep := make([]scored, full, len(matches))
+		copy(keep, matches[:full])
+		for _, m := range matches[full:] {
+			if m.hits == len(queryWords)-1 {
+				keep = append(keep, m)
+			}
+		}
+		matches = keep
 	}
 
 	results := make([]string, 0, len(matches))

@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/go-github/v62/github"
@@ -211,46 +215,115 @@ func TestIssueResult_JSON(t *testing.T) {
 	}
 }
 
-func TestPRArgs_Validation(t *testing.T) {
+// newTestGitHubClient points a go-github client at a local httptest server so no
+// test in this package ever dials api.github.com. Tests must stay hermetic: an
+// unauthenticated live call would consume GitHub's anonymous rate limit and can
+// hang indefinitely behind a firewall (go-github uses http.DefaultClient, which
+// has no timeout).
+func newTestGitHubClient(t *testing.T, h http.HandlerFunc) *github.Client {
+	t.Helper()
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+	gh := github.NewClient(nil)
+	// go-github requires BaseURL to end in a trailing slash (github.go:510).
+	// Assign it directly rather than via WithEnterpriseURLs, which would append
+	// "api/v3/" for a non-"api." host and break the path assertions below.
+	base, err := url.Parse(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("parse test server URL %q: %v", ts.URL+"/", err)
+	}
+	gh.BaseURL = base
+	return gh
+}
+
+func TestHandleCreatePR_RejectsMissingRequiredFields(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    PRArgs
-		wantErr bool
+		name string
+		args PRArgs
 	}{
-		{
-			name:    "missing owner",
-			args:    PRArgs{Owner: "", Repo: "r", Title: "t", Head: "h", Base: "b"},
-			wantErr: true,
-		},
-		{
-			name:    "missing repo",
-			args:    PRArgs{Owner: "o", Repo: "", Title: "t", Head: "h", Base: "b"},
-			wantErr: true,
-		},
-		{
-			name:    "missing title",
-			args:    PRArgs{Owner: "o", Repo: "r", Title: "", Head: "h", Base: "b"},
-			wantErr: true,
-		},
-		{
-			name:    "valid with body",
-			args:    PRArgs{Owner: "o", Repo: "r", Title: "t", Head: "h", Base: "b", Body: "desc"},
-			wantErr: false,
-		},
+		{"missing owner", PRArgs{Owner: "", Repo: "r", Title: "t", Head: "h", Base: "b"}},
+		{"missing repo", PRArgs{Owner: "o", Repo: "", Title: "t", Head: "h", Base: "b"}},
+		{"missing title", PRArgs{Owner: "o", Repo: "r", Title: "", Head: "h", Base: "b"}},
+		{"missing head", PRArgs{Owner: "o", Repo: "r", Title: "t", Head: "", Base: "b"}},
+		{"missing base", PRArgs{Owner: "o", Repo: "r", Title: "t", Head: "h", Base: ""}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, _ := json.Marshal(tt.args)
-			_, err := handleCreatePR(context.Background(), github.NewClient(nil), data)
-			if tt.wantErr && err == nil {
-				t.Error("expected error")
+			data, err := json.Marshal(tt.args)
+			if err != nil {
+				t.Fatalf("marshal PRArgs %+v: %v", tt.args, err)
 			}
-			if !tt.wantErr && err == nil {
-				// Will fail because no real token, but that's expected
-				t.Log("would need GITHUB_TOKEN to succeed")
+			// The server fails the test if reached: validation must reject
+			// before any HTTP call is issued.
+			gh := newTestGitHubClient(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected HTTP request %s %s: validation should have rejected %+v first", r.Method, r.URL.Path, tt.args)
+				w.WriteHeader(http.StatusInternalServerError)
+			})
+
+			res, err := handleCreatePR(context.Background(), gh, data)
+			if err == nil {
+				t.Fatalf("handleCreatePR(%+v) = %v, nil; want a validation error", tt.args, res)
+			}
+			if res != nil {
+				t.Errorf("handleCreatePR(%+v) returned result %v alongside error %v; want nil result", tt.args, res, err)
+			}
+			if !strings.Contains(err.Error(), "are required") {
+				t.Errorf("handleCreatePR(%+v) error = %q, want it to mention the required fields (%q)", tt.args, err, "are required")
 			}
 		})
+	}
+}
+
+func TestHandleCreatePR_Success(t *testing.T) {
+	gh := newTestGitHubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("request method = %q, want %q", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/repos/o/r/pulls" {
+			t.Errorf("request path = %q, want %q", r.URL.Path, "/repos/o/r/pulls")
+		}
+		var sent map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		for field, want := range map[string]string{"title": "t", "head": "h", "base": "b", "body": "desc"} {
+			if sent[field] != want {
+				t.Errorf("request body %q = %v, want %q", field, sent[field], want)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"number":7,"title":"t","state":"open","url":"https://api.example/repos/o/r/pulls/7","html_url":"https://example/o/r/pull/7"}`))
+	})
+
+	data, err := json.Marshal(PRArgs{Owner: "o", Repo: "r", Title: "t", Head: "h", Base: "b", Body: "desc"})
+	if err != nil {
+		t.Fatalf("marshal PRArgs: %v", err)
+	}
+
+	res, err := handleCreatePR(context.Background(), gh, data)
+	if err != nil {
+		t.Fatalf("handleCreatePR with all required fields returned error: %v", err)
+	}
+	pr, ok := res.(PRResult)
+	if !ok {
+		t.Fatalf("handleCreatePR returned %T (%v), want PRResult", res, res)
+	}
+	if pr.Number != 7 {
+		t.Errorf("PRResult.Number = %d, want 7", pr.Number)
+	}
+	if pr.Title != "t" {
+		t.Errorf("PRResult.Title = %q, want %q", pr.Title, "t")
+	}
+	if pr.State != "open" {
+		t.Errorf("PRResult.State = %q, want %q", pr.State, "open")
+	}
+	if pr.URL != "https://api.example/repos/o/r/pulls/7" {
+		t.Errorf("PRResult.URL = %q, want %q", pr.URL, "https://api.example/repos/o/r/pulls/7")
+	}
+	if pr.HTMLURL != "https://example/o/r/pull/7" {
+		t.Errorf("PRResult.HTMLURL = %q, want %q", pr.HTMLURL, "https://example/o/r/pull/7")
 	}
 }
 

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 func TestNewHTTPClientServer(t *testing.T) {
@@ -551,7 +551,18 @@ func TestUnifiedPoolSendRequestToServerWithIDNotFound(t *testing.T) {
 	}
 }
 
-func TestUnifiedPoolSendServerNotificationNotFound(t *testing.T) {
+// TestUnifiedPoolSendServerNotificationUnknownServerIsSilentNoOp pins the
+// current — arguably wrong — behavior: UnifiedPool.SendServerNotification
+// reports success for a server that exists in no pool. The stdio pool
+// correctly returns "server not found", but UnifiedPool then falls through to
+// HTTPClientPool.SendServerNotification (http_pool.go) and
+// SSEPool.SendServerNotification (sse_pool.go), which are `return nil` stubs,
+// and it short-circuits on the first nil. This test is pinned rather than
+// asserting an error so that a future implementation which starts reporting
+// not-found trips it and forces the decision to be made deliberately; the
+// caller in pkg/mcp/dispatch.go currently treats that nil as a delivered
+// notification.
+func TestUnifiedPoolSendServerNotificationUnknownServerIsSilentNoOp(t *testing.T) {
 	stdioPool := NewStdioPool(5, 5*time.Minute, nil)
 	defer stdioPool.Close()
 	httpPool := NewHTTPClientPool(nil)
@@ -560,8 +571,9 @@ func TestUnifiedPoolSendServerNotificationNotFound(t *testing.T) {
 	unified := NewUnifiedPool(stdioPool, httpPool, nil, nil)
 
 	err := unified.SendServerNotification(context.Background(), "nonexistent", "test", nil)
+
 	if err != nil {
-		t.Logf("Got error for nonexistent server (expected when stdio pool is queried first): %v", err)
+		t.Fatalf("SendServerNotification(%q) = %v, want nil (unknown servers are currently a silent no-op)", "nonexistent", err)
 	}
 }
 

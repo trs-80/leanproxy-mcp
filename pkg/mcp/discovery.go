@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 // stubDescChars caps per-tool description length in lazy-loading tools/list

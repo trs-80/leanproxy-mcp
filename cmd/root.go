@@ -21,7 +21,7 @@ Features:
   - MCP server registry management
   - Configurable redaction patterns
 
-For full documentation, see: https://github.com/mmornati/leanproxy-mcp#readme`,
+For full documentation, see: https://github.com/trs-80/leanproxy-mcp-bob#readme`,
 	SilenceUsage: true,
 }
 

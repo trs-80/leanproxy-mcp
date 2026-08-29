@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 const semanticStatsVersion = 1

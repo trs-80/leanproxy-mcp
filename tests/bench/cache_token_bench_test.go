@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/compactor"
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/compactor"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
 // servedToolsJSON is the tools/list result the gateway would emit for these

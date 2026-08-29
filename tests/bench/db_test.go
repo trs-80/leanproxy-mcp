@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/postgresql"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/postgresql"
 )
 
 func benchLogger() *slog.Logger {

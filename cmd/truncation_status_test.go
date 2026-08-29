@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/statusfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/statusfile"
 )
 
 func readStatusInfoForTest(t *testing.T, store *statusfile.FileStatusStore) (statusfile.StatusInfo, error) {

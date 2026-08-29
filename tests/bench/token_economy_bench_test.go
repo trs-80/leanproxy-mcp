@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/gateway"
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
-	"github.com/mmornati/leanproxy-mcp/tests/bench/mockmcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/gateway"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/tests/bench/mockmcp"
 )
 
 // --- helpers --------------------------------------------------------------

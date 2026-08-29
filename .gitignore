@@ -55,5 +55,10 @@ graphify-out/
 # Bench results (regenerated on demand via `make bench`)
 bench-results/
 
+# Proxy binary built from source for `make bench-e2e-live`. Must stay
+# ignored: abbench refuses to start on a dirty tree, and an untracked
+# binary here would itself be the dirt.
+.bench-bin/
+
 # Local isolated development worktrees
 .worktrees/

@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
-	"github.com/mmornati/leanproxy-mcp/pkg/cache"
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/gateway"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/sidecar"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/gateway"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/sidecar"
 )
 
 const (

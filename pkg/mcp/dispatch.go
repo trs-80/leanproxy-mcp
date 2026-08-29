@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
 )
 
 func (h *Handler) HandleRequest(ctx context.Context, req *Request) (*Response, error) {

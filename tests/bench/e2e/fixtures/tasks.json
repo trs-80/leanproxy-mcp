@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "note": "Frozen task set for the live A/B sweep. Chosen from real recorded history so round trips are genuine. Do not edit without re-running every arm — runs are only comparable against the same fixture. expect_tool names the UNPREFIXED tool: the same codebase-memory tool is called `codebase-memory_get_architecture` behind the proxy and `get_architecture` natively, and read_task_result matches expect_tool as a substring of the recorded tool message so both forms hit.",
+  "tasks": [
+    {
+      "id": "graph-arch",
+      "prompt": "Using the codebase graph, summarize the architecture of the pkg/mcp package.",
+      "expect_tool": "get_architecture"
+    },
+    {
+      "id": "graph-callers",
+      "prompt": "Who calls the truncation stats tracker in pkg/mcp? Trace the call path.",
+      "expect_tool": "trace_path"
+    },
+    {
+      "id": "graph-search",
+      "prompt": "Find every symbol in this repo whose name mentions estimator.",
+      "expect_tool": "search_graph"
+    },
+    {
+      "id": "graph-snippet",
+      "prompt": "Show me the source of the EstimateTokens function.",
+      "expect_tool": "get_code_snippet"
+    },
+    {
+      "id": "graph-coverage",
+      "prompt": "Check index coverage for pkg/reporter/cost.go and report any gaps.",
+      "expect_tool": "check_index_coverage"
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+// Package e2e contains the end-to-end A/B benchmark harness. Unlike
+// tests/bench/token_economy_bench_test.go, which is a pure accounting model,
+// this package starts the real proxy and measures the bytes a client actually
+// receives.
+package e2e
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
+)
+
+// Client is a minimal stdio JSON-RPC MCP client. It speaks just enough of the
+// protocol to capture a tools/list payload: initialize, initialized, tools/list.
+type Client struct {
+	cmd     *exec.Cmd
+	in      io.WriteCloser
+	out     *bufio.Reader
+	next    int
+	homeDir string // private LEANPROXY_HOME for cmd; removed in Close
+}
+
+// Dial starts bin with args and attaches to its stdin/stdout. The subprocess
+// gets a private LEANPROXY_HOME — a per-Dial temp directory holding
+// everything LeanProxy writes for itself. Without it, a real run of
+// `go test ./tests/bench/e2e/` against the leanproxy-mcp binary wrote
+// ballast0.json/ballast1.json into the operator's actual
+// ~/.config/leanproxy/toolcache, and Task 4 spawns the proxy hundreds of
+// times across a sweep. See TestDialIsolatesHomeDirectory.
+//
+// HOME is deliberately left alone. It used to be the isolation lever, but
+// every upstream MCP server the proxy spawns inherits it, so the harness was
+// also relocating the home of servers it does not own — and a stateful
+// upstream then behaves differently under measurement than in production.
+// See TestDialIsolatesLeanproxyStateWithoutMovingTheRealHome.
+func Dial(bin string, args ...string) (*Client, error) {
+	home, err := os.MkdirTemp("", "leanproxy-e2e-home-*")
+	if err != nil {
+		return nil, fmt.Errorf("isolate home dir: %w", err)
+	}
+
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), cachefile.HomeEnv+"="+home)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		os.RemoveAll(home)
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		os.RemoveAll(home)
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		os.RemoveAll(home)
+		return nil, fmt.Errorf("start %s: %w", bin, err)
+	}
+	return &Client{cmd: cmd, in: stdin, out: bufio.NewReaderSize(stdout, 1<<20), next: 1, homeDir: home}, nil
+}
+
+// StateDir is the private LEANPROXY_HOME this client's subprocess was given.
+// Exposed so a test can assert the POSITIVE half of the isolation contract —
+// that LeanProxy's own state actually lands here — which is the only check
+// that fails deterministically when the subprocess ignores LEANPROXY_HOME.
+// Watching the real home for the absence of a file cannot do that: the buggy
+// store creates its file and removes it again, so a before/after comparison
+// straddling the sweep sees nothing either way. Valid only until Close.
+func (c *Client) StateDir() string { return c.homeDir }
+
+// call sends one JSON-RPC request and returns the raw `result` bytes.
+func (c *Client) call(method string, params any) (json.RawMessage, error) {
+	id := c.next
+	c.next++
+
+	req := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
+	if params != nil {
+		req["params"] = params
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", method, err)
+	}
+	if _, err := c.in.Write(append(body, '\n')); err != nil {
+		return nil, fmt.Errorf("write %s: %w", method, err)
+	}
+
+	line, err := c.out.ReadBytes('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", method, err)
+	}
+	var resp struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return nil, fmt.Errorf("parse %s response: %w (line: %s)", method, err, line)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("%s failed: %d %s", method, resp.Error.Code, resp.Error.Message)
+	}
+	return resp.Result, nil
+}
+
+// notify sends a JSON-RPC notification, which takes no response.
+func (c *Client) notify(method string) error {
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if err != nil {
+		return err
+	}
+	_, err = c.in.Write(append(body, '\n'))
+	return err
+}
+
+// Initialize performs the MCP handshake.
+func (c *Client) Initialize() error {
+	_, err := c.call("initialize", map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "leanproxy-ab-harness", "version": "1"},
+	})
+	if err != nil {
+		return err
+	}
+	return c.notify("notifications/initialized")
+}
+
+// ToolsListRaw returns the raw result object from tools/list. This is the exact
+// payload a client holds in context, which is the quantity under measurement.
+func (c *Client) ToolsListRaw() ([]byte, error) {
+	res, err := c.call("tools/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// CallTool invokes tools/call for name with the given arguments and returns
+// the raw result. Used to verify actual behavior beyond the tools/list shape
+// — e.g. that a router-arm wrapper tool can really reach an upstream, not
+// just that it advertises itself.
+func (c *Client) CallTool(name string, arguments map[string]any) (json.RawMessage, error) {
+	res, err := c.call("tools/call", map[string]any{
+		"name":      name,
+		"arguments": arguments,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// Close shuts stdin, waits for the subprocess to exit, and removes the
+// isolated HOME directory Dial created for it.
+func (c *Client) Close() error {
+	_ = c.in.Close()
+	_ = c.cmd.Process.Kill()
+	_, _ = c.cmd.Process.Wait()
+	if c.homeDir != "" {
+		_ = os.RemoveAll(c.homeDir)
+	}
+	return nil
+}

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
 )
 
 // countingPool wraps mockPool behavior with an upstream tools/call counter so

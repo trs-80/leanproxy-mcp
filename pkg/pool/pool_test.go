@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
 )
 
 func TestNewStdioPool(t *testing.T) {
@@ -574,54 +574,25 @@ func TestPoolHasServer(t *testing.T) {
 	}
 }
 
+// TestPoolSendRequest verifies that StdioPool.SendRequest round-trips a
+// JSON-RPC request to a live server and returns its result. The upstream is
+// the fake MCP helper (not `cat`) because only a real responder can prove the
+// answer came back; `cat` echoes the request and never produces a result.
 func TestPoolSendRequest(t *testing.T) {
 	ctx := context.Background()
 	pool := NewStdioPool(5, 5*time.Minute, nil)
 	defer pool.Close()
 
-	config := &migrate.ServerConfig{
-		Name:      "test-server",
-		Transport: registry.TransportStdio,
-		Stdio: &migrate.StdioConfig{
-			Command: "cat",
-			Args:    []string{},
-		},
-		TimeoutValue: 30 * time.Second,
-	}
+	require.NoError(t, pool.StartServer(ctx, fakeMCPConfig("test-server")))
 
-	pool.StartServer(ctx, config)
+	resp, err := pool.SendRequest(ctx, "test-server", &proxy.JSONRPCRequest{
+		Method: "ping",
+		ID:     1,
+	}, 5*time.Second)
 
-	resultCh := make(chan *Response, 1)
-	errorCh := make(chan error, 1)
-
-	req := Request{
-		Method:   "test",
-		Params:   nil,
-		ID:       1,
-		Timeout:  300 * time.Millisecond, // cat never answers; any timeout exercises the path
-		ResultCh: resultCh,
-		ErrorCh:  errorCh,
-	}
-
-	go func() {
-		server, err := pool.GetServer("test-server")
-		if err != nil {
-			errorCh <- err
-			return
-		}
-		server.requestCh <- req
-	}()
-
-	select {
-	case resp := <-resultCh:
-		if resp == nil {
-			t.Error("expected non-nil response")
-		}
-	case err := <-errorCh:
-		t.Logf("Request error (expected in some cases): %v", err)
-	case <-time.After(5 * time.Second):
-		t.Error("test timeout")
-	}
+	require.NoError(t, err, "SendRequest to a live server should succeed")
+	require.NotNil(t, resp, "SendRequest should return a response")
+	require.NotNil(t, resp.Result, "response should carry the server's result")
 }
 
 func TestPoolSendRequestTimeout(t *testing.T) {
@@ -649,100 +620,40 @@ func TestPoolSendRequestTimeout(t *testing.T) {
 	require.Error(t, err, "expected timeout error")
 }
 
+// TestPoolSendRequestToServer verifies that SendRequestToServer returns the
+// server's successful result rather than a JSON-RPC error.
 func TestPoolSendRequestToServer(t *testing.T) {
 	ctx := context.Background()
 	pool := NewStdioPool(5, 5*time.Minute, nil)
 	defer pool.Close()
 
-	config := &migrate.ServerConfig{
-		Name:      "test-server",
-		Transport: registry.TransportStdio,
-		Stdio: &migrate.StdioConfig{
-			Command: "cat",
-			Args:    []string{},
-		},
-		TimeoutValue: 30 * time.Second,
-	}
+	require.NoError(t, pool.StartServer(ctx, fakeMCPConfig("test-server")))
 
-	pool.StartServer(ctx, config)
+	resp, err := pool.SendRequestToServer(ctx, "test-server", "ping", nil, 5*time.Second)
 
-	resultCh := make(chan *Response, 1)
-	errorCh := make(chan error, 1)
-
-	req := Request{
-		Method:   "test",
-		Params:   nil,
-		ID:       1,
-		Timeout:  300 * time.Millisecond, // cat never answers; any timeout exercises the path
-		ResultCh: resultCh,
-		ErrorCh:  errorCh,
-	}
-
-	go func() {
-		server, _ := pool.GetServer("test-server")
-		if server != nil {
-			server.requestCh <- req
-		}
-	}()
-
-	select {
-	case resp := <-resultCh:
-		if resp == nil {
-			t.Error("expected non-nil response")
-		}
-	case err := <-errorCh:
-		t.Logf("Request error: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Error("test timeout")
-	}
+	require.NoError(t, err, "SendRequestToServer to a live server should succeed")
+	require.NotNil(t, resp, "SendRequestToServer should return a response")
+	require.Nil(t, resp.Error, "response should not carry a JSON-RPC error")
+	require.NotNil(t, resp.Result, "response should carry the server's result")
 }
 
+// TestPoolSendRequestToServerWithID verifies that the caller-supplied ID is
+// propagated onto the response. The worker rewrites the ID on the wire to a
+// per-generation value, so the response must be mapped back to the ID the
+// caller asked for.
 func TestPoolSendRequestToServerWithID(t *testing.T) {
 	ctx := context.Background()
 	pool := NewStdioPool(5, 5*time.Minute, nil)
 	defer pool.Close()
 
-	config := &migrate.ServerConfig{
-		Name:      "test-server",
-		Transport: registry.TransportStdio,
-		Stdio: &migrate.StdioConfig{
-			Command: "cat",
-			Args:    []string{},
-		},
-		TimeoutValue: 30 * time.Second,
-	}
+	require.NoError(t, pool.StartServer(ctx, fakeMCPConfig("test-server")))
 
-	pool.StartServer(ctx, config)
+	resp, err := pool.SendRequestToServerWithID(ctx, "test-server", "ping", nil, 5*time.Second, 42)
 
-	resultCh := make(chan *Response, 1)
-	errorCh := make(chan error, 1)
-
-	req := Request{
-		Method:   "test",
-		Params:   nil,
-		ID:       42,
-		Timeout:  300 * time.Millisecond, // cat never answers; any timeout exercises the path
-		ResultCh: resultCh,
-		ErrorCh:  errorCh,
-	}
-
-	go func() {
-		server, _ := pool.GetServer("test-server")
-		if server != nil {
-			server.requestCh <- req
-		}
-	}()
-
-	select {
-	case resp := <-resultCh:
-		if resp == nil {
-			t.Error("expected non-nil response")
-		}
-	case err := <-errorCh:
-		t.Logf("Request error: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Error("test timeout")
-	}
+	require.NoError(t, err, "SendRequestToServerWithID to a live server should succeed")
+	require.NotNil(t, resp, "SendRequestToServerWithID should return a response")
+	require.Nil(t, resp.Error, "response should not carry a JSON-RPC error")
+	require.Equal(t, 42, resp.ID, "response ID should be the caller's ID, not the wire ID")
 }
 
 func TestPoolSendNotificationToServer(t *testing.T) {
@@ -760,12 +671,10 @@ func TestPoolSendNotificationToServer(t *testing.T) {
 		TimeoutValue: 30 * time.Second,
 	}
 
-	pool.StartServer(ctx, config)
+	require.NoError(t, pool.StartServer(ctx, config))
 
 	err := pool.SendNotificationToServer(ctx, "test-server", "test notification", nil)
-	if err != nil {
-		t.Logf("Notification error (expected in some cases): %v", err)
-	}
+	require.NoError(t, err, "notification to a running server should be delivered")
 }
 
 func TestPoolSendNotificationToServerNotFound(t *testing.T) {
@@ -794,12 +703,10 @@ func TestPoolSendServerNotification(t *testing.T) {
 		TimeoutValue: 30 * time.Second,
 	}
 
-	pool.StartServer(ctx, config)
+	require.NoError(t, pool.StartServer(ctx, config))
 
 	err := pool.SendServerNotification(ctx, "test-server", "test notification", map[string]interface{}{"key": "value"})
-	if err != nil {
-		t.Logf("Notification error (expected in some cases): %v", err)
-	}
+	require.NoError(t, err, "notification to a running server should be delivered")
 }
 
 func TestPoolSendServerNotificationNotFound(t *testing.T) {

@@ -18,12 +18,12 @@ This single command works on macOS and Linux, automatically detecting your archi
 
 ```bash
 # Download latest version (auto-detects OS/arch)
-VERSION=${VERSION:-$(curl -sL https://api.github.com/repos/mmornati/leanproxy-mcp/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')}
+VERSION=${VERSION:-$(curl -sL https://api.github.com/repos/trs-80/leanproxy-mcp-bob/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')}
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 [ "$ARCH" = "x86_64" ] && ARCH="amd64"
 [ "$ARCH" = "arm64" ] && ARCH="arm64"
-curl -fsSL "https://github.com/mmornati/leanproxy-mcp/releases/download/${VERSION}/leanproxy-mcp_${VERSION#v}_${OS}_${ARCH}.tar.gz" -o leanproxy-mcp.tar.gz
+curl -fsSL "https://github.com/trs-80/leanproxy-mcp-bob/releases/download/${VERSION}/leanproxy-mcp_${VERSION#v}_${OS}_${ARCH}.tar.gz" -o leanproxy-mcp.tar.gz
 tar -xzf leanproxy-mcp.tar.gz
 chmod +x leanproxy-mcp
 sudo mv leanproxy-mcp /usr/local/bin/
@@ -34,13 +34,13 @@ rm leanproxy-mcp.tar.gz
 
 ### Manual Download
 
-If you prefer, download manually from: https://github.com/mmornati/leanproxy-mcp/releases
+If you prefer, download manually from: https://github.com/trs-80/leanproxy-mcp-bob/releases
 
 ## Install via Homebrew (macOS/Linux)
 
 ```bash
 # Add custom tap (point to this repository)
-brew tap mmornati/leanproxy-mcp https://github.com/mmornati/leanproxy-mcp
+brew tap trs-80/leanproxy-mcp-bob https://github.com/trs-80/leanproxy-mcp-bob
 
 # Install
 brew install leanproxy-mcp
@@ -50,7 +50,7 @@ brew install leanproxy-mcp
 
 ```bash
 # Clone repository
-git clone https://github.com/mmornati/leanproxy-mcp.git
+git clone https://github.com/trs-80/leanproxy-mcp-bob.git
 cd leanproxy-mcp
 
 # Build

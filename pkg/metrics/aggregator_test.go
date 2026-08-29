@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 func TestSnapshot(t *testing.T) {

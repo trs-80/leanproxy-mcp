@@ -12,34 +12,34 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer/injection"
-	"github.com/mmornati/leanproxy-mcp/pkg/cache"
-	"github.com/mmornati/leanproxy-mcp/pkg/cache/embedder"
-	"github.com/mmornati/leanproxy-mcp/pkg/cache/vectordb"
-	"github.com/mmornati/leanproxy-mcp/pkg/dashboard"
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
-	"github.com/mmornati/leanproxy-mcp/pkg/gateway"
-	"github.com/mmornati/leanproxy-mcp/pkg/mcp"
-	"github.com/mmornati/leanproxy-mcp/pkg/metrics"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
-	"github.com/mmornati/leanproxy-mcp/pkg/modelrouter"
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
-	"github.com/mmornati/leanproxy-mcp/pkg/proxy"
-	"github.com/mmornati/leanproxy-mcp/pkg/registry"
-	"github.com/mmornati/leanproxy-mcp/pkg/router"
-	"github.com/mmornati/leanproxy-mcp/pkg/sidecar"
-	"github.com/mmornati/leanproxy-mcp/pkg/statusfile"
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
-	"github.com/mmornati/leanproxy-mcp/pkg/utils/dryrun"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer/injection"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache/embedder"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache/vectordb"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/dashboard"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/gateway"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/mcp"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/metrics"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/modelrouter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/proxy"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/registry"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/router"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/sidecar"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/statusfile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils/dryrun"
 )
 
 var serveCmd = &cobra.Command{
@@ -182,9 +182,12 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	configPath := GlobalConfigPath
 	if configPath == "" {
-		usr, err := user.Current()
-		if err == nil {
-			configPath = filepath.Join(usr.HomeDir, ".config", "leanproxy_servers.yaml")
+		// cachefile.HomeDir ($LEANPROXY_HOME, else $HOME), matching
+		// internal/cachefile.Dir and pkg/statusfile: a proxy pointed at a
+		// private state root must resolve its default config inside that
+		// root, not read the operator's real one.
+		if home, err := cachefile.HomeDir(); err == nil {
+			configPath = filepath.Join(home, ".config", "leanproxy_servers.yaml")
 		}
 	}
 

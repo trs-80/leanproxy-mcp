@@ -15,15 +15,20 @@ import (
 // and exits 0. Network failure should print retry guidance and preserve the
 // existing cache (covered by the unit tests; this E2E verifies the happy path).
 
+// NOTE: this test still reaches the live registry (pkg/registry hardcodes
+// DefaultRegistryURL and exposes no flag or env override, so it cannot be
+// pointed at an httptest server from out here). It therefore skips wherever the
+// network is unavailable. What the isolation below fixes is the destructive
+// half: it used to resolve the cache path from os.UserHomeDir(), so a green run
+// meant `marketplace sync` had overwritten the operator's real
+// ~/.leanproxy/registry/index.json. It now asserts on the injected home the
+// child actually wrote to.
 func TestStory_11_1_MarketplaceSync_WritesCache(t *testing.T) {
 	requireBinary(t)
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("failed to get home: %v", err)
-	}
+	home := testHome(t)
 
-	stdout, stderr, exitCode := runBinary("marketplace", "sync")
+	stdout, stderr, exitCode := runBinary(t, "marketplace", "sync")
 	t.Logf("marketplace sync: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {
@@ -58,7 +63,7 @@ servers: []
 
 	t.Setenv("LEANPROXY_CONFIG", configPath)
 
-	stdout, stderr, exitCode := runBinary("add", "definitely-not-a-real-server-xyz-12345", "--dry-run")
+	stdout, stderr, exitCode := runBinary(t, "add", "definitely-not-a-real-server-xyz-12345", "--dry-run")
 	t.Logf("add unknown: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode == 0 {
@@ -93,7 +98,7 @@ servers: []
 	writeFile(t, configPath, original)
 	t.Setenv("LEANPROXY_CONFIG", configPath)
 
-	_, _, _ = runBinary("add", "github", "--dry-run", "--i-understand-the-risks")
+	_, _, _ = runBinary(t, "add", "github", "--dry-run", "--i-understand-the-risks")
 
 	contents, _ := os.ReadFile(configPath)
 	if !strings.Contains(string(contents), "servers: []") {
@@ -109,7 +114,7 @@ servers: []
 func TestStory_11_3_MarketplaceSearch_ColumnsPresent(t *testing.T) {
 	requireBinary(t)
 
-	stdout, stderr, exitCode := runBinary("marketplace", "search", "github")
+	stdout, stderr, exitCode := runBinary(t, "marketplace", "search", "github")
 	t.Logf("marketplace search github: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 
 	if exitCode != 0 {

@@ -28,9 +28,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/internal/cachefile"
-	"github.com/mmornati/leanproxy-mcp/pkg/compactor"
-	"github.com/mmornati/leanproxy-mcp/pkg/toolstore"
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/compactor"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
 // benchToolCount matches the largest server in the live snapshot (garmin,

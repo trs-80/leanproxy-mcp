@@ -3,7 +3,7 @@ package metrics
 import (
 	"sort"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 type PromptHashEntry struct {

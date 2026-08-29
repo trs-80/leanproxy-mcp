@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/bouncer"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/bouncer"
 )
 
 // DefaultQuarantineTTL is the default retention period for quarantined payloads.

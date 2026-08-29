@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
 )
 
 var costCmd = &cobra.Command{

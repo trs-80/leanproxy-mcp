@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/errors"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
 )
 
 type HTTPTransportConfig struct {

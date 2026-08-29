@@ -405,7 +405,38 @@ func TestMerge_PreserveMetadata(t *testing.T) {
 	}
 
 	if result.Meta.Source != "override-file" {
-		t.Logf("metadata source overridden as expected: %s", result.Meta.Source)
+		t.Errorf("Meta.Source = %q, want %q", result.Meta.Source, "override-file")
+	}
+	if result.Meta.Priority != 2 {
+		t.Errorf("Meta.Priority = %d, want %d", result.Meta.Priority, 2)
+	}
+}
+
+// Covers the fallback half of deepMerge's metadata rule: an override that
+// carries no Meta.Source must not blank out the base's metadata.
+func TestMerge_KeepsBaseMetadataWhenOverrideHasNoSource(t *testing.T) {
+	logger := slog.Default()
+	merger := NewManifestMerger(logger)
+
+	base := &Config{
+		Name: "base",
+		Meta: Metadata{Source: "base-file", Priority: 1},
+	}
+
+	override := &Config{
+		Name: "override",
+	}
+
+	result, err := merger.Merge(context.Background(), base, override)
+	if err != nil {
+		t.Fatalf("Merge failed: %v", err)
+	}
+
+	if result.Meta.Source != "base-file" {
+		t.Errorf("Meta.Source = %q, want %q", result.Meta.Source, "base-file")
+	}
+	if result.Meta.Priority != 1 {
+		t.Errorf("Meta.Priority = %d, want %d", result.Meta.Priority, 1)
 	}
 }
 

@@ -39,7 +39,7 @@ Measured on a 3-server production-shaped MCP setup (GitHub + Garmin + Intervals.
 | Throughput (in-process mock MCP) | **~25,000 q/s** | ≥500 q/s | ✅ |
 | Binary size (darwin-arm64) | **15.8 MB** | <20 MB | ✅ |
 
-> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. **Full results and methodology: [docs/benchmark-results.md](docs/benchmark-results.md).**
+> All numbers above come from `tests/bench/token_economy_bench_test.go` and `pkg/reporter/cost.go`. They measure the **tool-schema slice** via an accounting model, not end-to-end session cost — the model omits discovery round trips and charges a single stub rather than the full manifest. For measured end-to-end numbers run `make bench-e2e`. **Full results and methodology, including what the modelled figures do and do not claim: [docs/benchmark-results.md](docs/benchmark-results.md).**
 
 ---
 

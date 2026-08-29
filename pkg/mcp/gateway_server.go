@@ -6,7 +6,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/mmornati/leanproxy-mcp/pkg/pool"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
 )
 
 type MCPServerInstance struct {

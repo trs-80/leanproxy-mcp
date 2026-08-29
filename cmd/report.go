@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/reporter"
-	"github.com/mmornati/leanproxy-mcp/pkg/utils"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/reporter"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/utils"
 )
 
 var reportCmd = &cobra.Command{

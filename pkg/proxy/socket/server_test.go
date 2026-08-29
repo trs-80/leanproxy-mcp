@@ -7,10 +7,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/errors"
 )
 
 func waitForSocket(path string, timeout time.Duration) error {
@@ -314,6 +316,9 @@ func TestConcurrentConnections(t *testing.T) {
 	}
 }
 
+// maxMsgSizeBytes is the socket message-size limit exercised by TestMessageTooLarge.
+const maxMsgSizeBytes = 100
+
 func TestMessageTooLarge(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")
@@ -321,15 +326,17 @@ func TestMessageTooLarge(t *testing.T) {
 	config := ServerConfig{
 		Path:       socketPath,
 		Perm:       0700,
-		MaxMsgSize: 100,
+		MaxMsgSize: maxMsgSizeBytes,
 		RateLimit:  100,
 	}
 
 	server, err := NewServer(config, nil)
 	require.NoError(t, err, "NewServer failed")
 
+	// Return a real value so an executed oversize request is distinguishable
+	// from a rejected one.
 	server.RegisterMethod("test.echo", func(ctx context.Context, params json.RawMessage) (interface{}, error) {
-		return nil, nil
+		return map[string]string{"echo": "executed"}, nil
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -345,11 +352,29 @@ func TestMessageTooLarge(t *testing.T) {
 	require.NoError(t, err, "Dial failed")
 	defer conn.Close()
 
-	largeReq := `{"jsonrpc":"2.0","method":"test.echo","params":{},"id":1}` + string(make([]byte, 200))
+	// Pad with spaces, not NUL bytes: the payload must stay valid JSON so that the
+	// size limit is the only possible reason for rejection. NUL padding would draw a
+	// parse error (-32700) even with the limit removed, hiding the regression.
+	largeReq := `{"jsonrpc":"2.0","method":"test.echo","params":{},"id":1}` +
+		strings.Repeat(" ", maxMsgSizeBytes*2)
+	require.Greater(t, len(largeReq)+1, maxMsgSizeBytes, "payload must exceed MaxMsgSize")
+
 	_, err = fmt.Fprintf(conn, "%s\n", largeReq)
 	require.NoError(t, err, "Write failed")
 
-	require.NoError(t, waitForSocket(socketPath, 100*time.Millisecond), "server not ready after write")
+	resp := make([]byte, 4096)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	n, err := conn.Read(resp)
+	require.NoError(t, err, "Read failed")
+
+	var rpcResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp[:n], &rpcResp), "Unmarshal failed")
+
+	errObj, ok := rpcResp["error"].(map[string]interface{})
+	require.True(t, ok, "expected a JSON-RPC error for an oversize message, got %v", rpcResp)
+	require.Equal(t, float64(errors.ErrCodeInvalidRequest), errObj["code"],
+		"expected invalid-request (-32600), not a parse error")
+	require.Nil(t, rpcResp["result"], "oversize message must not reach the handler")
 
 	conn.Close()
 	cancel()

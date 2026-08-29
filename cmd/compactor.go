@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/compactor"
-	"github.com/mmornati/leanproxy-mcp/pkg/migrate"
 	"github.com/spf13/cobra"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/compactor"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/migrate"
 )
 
 var compactorCmd = &cobra.Command{

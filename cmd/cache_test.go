@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/cache"
 	"github.com/spf13/cobra"
+
+	"github.com/trs-80/leanproxy-mcp-bob/internal/cachefile"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache"
 )
 
 func resetCacheStatsFlags(t *testing.T) {
@@ -69,33 +71,59 @@ func TestCacheCmd_Flags(t *testing.T) {
 	}
 }
 
-func TestCacheCmd_HelpOutput(t *testing.T) {
-	cmd := cacheCmd
-	cmd.SetArgs([]string{"--help"})
+func TestCacheCmd_HelpRendersCacheHelpNotRootHelp(t *testing.T) {
+	requireHelpFor(t, "cache")
+}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("help should not error: %v", err)
+// TestCacheCmd_ListReportsAnEmptyCache runs against the isolated LEANPROXY_HOME
+// runCLI installs, so "no cached tool data" is a fact this test established
+// rather than an accident of the developer's machine.
+//
+// Its predecessor asserted err == nil from cacheCmd.Execute(). That is doubly
+// vacuous here: the command never ran, AND cacheCmd uses Run (cache.go:18)
+// rather than RunE, with runCache swallowing failures by printing them
+// (cache.go:137, :143) — so even routed correctly, Execute returns nil whether
+// the cache is readable or not. Only the output can distinguish those.
+func TestCacheCmd_ListReportsAnEmptyCache(t *testing.T) {
+	out := requireCLISucceeds(t, "cache", "--list")
+
+	if !strings.Contains(out, "No cached tool data found") {
+		t.Errorf("`cache --list` against an isolated empty cache should say so\ngot:\n%s", out)
 	}
 }
 
-func TestCacheCmd_ListFlag(t *testing.T) {
-	cmd := cacheCmd
-	cmd.SetArgs([]string{"--list"})
+// TestCacheCmd_LocationPrintsTheIsolatedCacheDir is the assertion the old test
+// could not make: that the path printed is the one LEANPROXY_HOME selects.
+// A command that ignored the env var — which is exactly the class of bug that
+// had the e2e suite writing into the operator's real home — fails here.
+func TestCacheCmd_LocationPrintsTheIsolatedCacheDir(t *testing.T) {
+	out := requireCLISucceeds(t, "cache", "--location")
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("list flag should not error: %v", err)
+	if !strings.Contains(out, "Tool cache location: ") {
+		t.Fatalf("`cache --location` did not print a location\ngot:\n%s", out)
+	}
+	home := os.Getenv(cachefile.HomeEnv)
+	if home == "" {
+		t.Fatal("runCLI did not set an isolated " + cachefile.HomeEnv)
+	}
+	if !strings.Contains(out, home) {
+		t.Errorf("`cache --location` printed a path outside the isolated %s=%s\ngot:\n%s",
+			cachefile.HomeEnv, home, out)
 	}
 }
 
-func TestCacheCmd_LocationFlag(t *testing.T) {
-	cmd := cacheCmd
-	cmd.SetArgs([]string{"--location"})
+// TestCacheCmd_RejectsMutuallyExclusiveFlags pins the pairing declared at
+// cache.go:52-53. It is also the canary for flag-state leakage: if some other
+// test leaves Changed set on cacheCmd and resetAllCommandFlags stops clearing
+// it, the tests above start failing with this error instead of their own.
+func TestCacheCmd_RejectsMutuallyExclusiveFlags(t *testing.T) {
+	out, err := runCLI(t, "cache", "--list", "--location")
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("location flag should not error: %v", err)
+	if err == nil {
+		t.Fatalf("--list and --location are mutually exclusive and must be rejected\noutput:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "none of the others can be") {
+		t.Errorf("error should name the mutual-exclusion group, got: %v", err)
 	}
 }
 

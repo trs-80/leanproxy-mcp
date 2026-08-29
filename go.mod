@@ -1,4 +1,4 @@
-module github.com/mmornati/leanproxy-mcp
+module github.com/trs-80/leanproxy-mcp-bob
 
 go 1.25.5
 

@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/mmornati/leanproxy-mcp/pkg/cache/embedder"
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/cache/embedder"
 )
 
 var globalEmbedPool atomic.Pointer[embedder.Pool]
