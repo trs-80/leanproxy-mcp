@@ -291,7 +291,7 @@ func TestBallastWeightIsIdenticalAcrossLayers(t *testing.T) {
 	layer1 := BallastSpecs(mock, 1, toolsPerServer)[0].Args
 	layer2Bob, layer2LP := layer2BallastArgs(t, mock, toolsPerServer)
 
-	// Argument-level equality first: it localises a drift to the flag that
+	// Argument-level equality first: it localizes a drift to the flag that
 	// caused it, which a byte count alone cannot do.
 	if !reflect.DeepEqual(layer1, layer2Bob) {
 		t.Errorf("Layer 1 and Layer 2's agent-attached (native arm) ballast args differ:\n"+

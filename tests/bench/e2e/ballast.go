@@ -31,7 +31,7 @@ type Spec struct {
 var ballastFixtureJSON []byte
 
 // BallastFixture is the parsed fixtures/ballast.json. Only the fields both
-// layers actually consume or assert on are modelled; the rest of the file is
+// layers actually consume or assert on are modeled; the rest of the file is
 // provenance prose for humans.
 type BallastFixture struct {
 	Description      string `json:"description"`

@@ -12,7 +12,7 @@ import (
 //
 // Layer/Origin/Arm/BallastServers/BallastTools are set by both layers.
 // PayloadBytes/ResidencyTokens are set only by layer 1 (residency) — every
-// residency record measures them, so they always serialise, zero included.
+// residency record measures them, so they always serialize, zero included.
 // Task/Turns/InputTokens/OutputTokens/CacheRead/CacheWrite/CostUSD/
 // ContextTokens/Succeeded are set only by layer 2 (live) — a residency
 // record never measures any of them and leaves them entirely absent from
@@ -62,13 +62,13 @@ type Record struct {
 	Succeeded     *bool    `json:"succeeded,omitempty"`
 }
 
-// WriteReport serialises recs to path as indented JSON.
+// WriteReport serializes recs to path as indented JSON.
 func WriteReport(path string, recs []Record) error {
 	body, err := json.MarshalIndent(recs, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal report: %w", err)
 	}
-	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write report: %w", err)
 	}
 	return nil
