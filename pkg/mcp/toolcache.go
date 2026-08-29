@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trs-80/leanproxy-mcp-bob/pkg/pool"
 	"github.com/trs-80/leanproxy-mcp-bob/pkg/toolstore"
 )
 
@@ -122,8 +123,21 @@ func (h *Handler) refreshToolCacheFromServers(ctx context.Context) {
 			state, _ := h.pool.GetServerState(name)
 			h.logger.Debug("server state", "name", name, "state", state)
 
-			if state != "idle" && state != "running" && state != "busy" {
-				h.logger.Warn("server not running, attempting restart for cache refresh", "name", name, "state", state)
+			if state != pool.StateIdle && state != pool.StateRunning && state != pool.StateBusy {
+				// A server that is mid-transition is not a fault. An HTTP
+				// transport sits in `starting` for its first few hundred
+				// milliseconds on every cold start, and a real session logged
+				// this three times in ninety seconds against a context7 that
+				// was working perfectly — the kind of warning that sends
+				// someone debugging a healthy system. Report those at Debug
+				// and keep Warn for states that mean something is actually
+				// wrong. The restart below is unchanged either way: the cache
+				// refresh still needs the server up now.
+				if state == pool.StateStarting || state == pool.StateStopping {
+					h.logger.Debug("server still transitioning, restarting for cache refresh", "name", name, "state", state)
+				} else {
+					h.logger.Warn("server not running, attempting restart for cache refresh", "name", name, "state", state)
+				}
 
 				var restartErr error
 				for attempt := 0; attempt < 3; attempt++ {
