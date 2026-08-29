@@ -16,7 +16,7 @@ var ErrorHintRegistry = map[string][]ErrorHint{
 	"repository": {
 		{
 			Original:   "Could not resolve to a Repository",
-			Suggestion: "Check the owner/repo spelling. Ensure the repository exists and you have access. Tip: Use the exact format 'owner/repo' (e.g., 'mmornati/leanproxy-mcp').",
+			Suggestion: "Check the owner/repo spelling. Ensure the repository exists and you have access. Tip: Use the exact format 'owner/repo' (e.g., 'trs-80/leanproxy-mcp-bob').",
 			Action:     "check_repo",
 			Reference:  "https://docs.github.com/en/github/finding-open-source-projects-on-github",
 		},

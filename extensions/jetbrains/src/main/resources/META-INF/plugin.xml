@@ -2,7 +2,7 @@
     <id>com.leanproxy.leanproxy-cost</id>
     <name>LeanProxy Cost Monitor</name>
     <version>0.1.0</version>
-    <vendor email="support@leanproxy.dev" url="https://github.com/mmornati/leanproxy-mcp">LeanProxy</vendor>
+    <vendor email="support@leanproxy.dev" url="https://github.com/trs-80/leanproxy-mcp-bob">LeanProxy</vendor>
     <description><![CDATA[
         <h2>LeanProxy Cost Monitor</h2>
         <p>Real-time AI cost monitoring for LeanProxy in your JetBrains IDE status bar and tool window.</p>

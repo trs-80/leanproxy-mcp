@@ -88,13 +88,13 @@ var LeanproxyTools = []ToolDefinition{
 					"server": "github",
 					"tool":   "list_issues",
 					"arguments": map[string]interface{}{
-						"owner":   "mmornati",
-						"repo":    "leanproxy-mcp",
+						"owner":   "trs-80",
+						"repo":    "leanproxy-mcp-bob",
 						"state":   "open",
 						"perPage": 10,
 					},
 				},
-				Description: "List open issues on leanproxy-mcp repository",
+				Description: "List open issues on the leanproxy-mcp-bob repository",
 			},
 			{
 				Input: map[string]interface{}{
@@ -102,8 +102,8 @@ var LeanproxyTools = []ToolDefinition{
 					"tool":   "search_issues",
 					"arguments": map[string]interface{}{
 						"query":   "is:issue is:open label:bug",
-						"owner":   "mmornati",
-						"repo":    "leanproxy-mcp",
+						"owner":   "trs-80",
+						"repo":    "leanproxy-mcp-bob",
 						"perPage": 5,
 					},
 				},
